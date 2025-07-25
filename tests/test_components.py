@@ -1,0 +1,211 @@
+import pymimir as mm
+import pytest
+import torch
+
+from pathlib import Path
+from pymimir_rgnn import RelationalGraphNeuralNetwork, RelationalGraphNeuralNetworkConfig, InputType, OutputNodeType, OutputValueType, AggregationFunction
+from pymimir_rl import *
+
+
+TEST_DIR = Path(__file__).parent
+DATA_DIR = TEST_DIR / 'data'
+
+
+class RGNNWrapper(QValueModel):
+    def __init__(self, domain: mm.Domain) -> None:
+        super().__init__()  # type: ignore
+        config = RelationalGraphNeuralNetworkConfig(
+            domain=domain,
+            input_specification=(InputType.State, InputType.GroundActions, InputType.Goal),
+            output_specification=[('q', OutputNodeType.Action, OutputValueType.Scalar)],
+            message_aggregation=AggregationFunction.Add,
+            num_layers=4,
+            embedding_size=8
+        )
+        self.rgnn = RelationalGraphNeuralNetwork(config)
+
+    def forward_transitions(self, transitions: list[Transition]) -> torch.Tensor:
+        input_list: list[tuple[mm.State, list[mm.GroundAction], mm.GroundConjunctiveCondition]] = []
+        action_indices: list[int] = []
+        for transition in transitions:
+            state = transition.current_state
+            actions = state.generate_applicable_actions()
+            goal = state.get_problem().get_goal_condition()
+            input_list.append((state, actions, goal))
+            action_index = actions.index(transition.selected_action)
+            action_indices.append(action_index)
+        q_values_list: list[torch.Tensor] = self.rgnn.forward(input_list).readout('q')  # type: ignore
+        output = torch.stack([q_values[action_idx] for q_values, action_idx in zip(q_values_list, action_indices)])
+        assert not output.isnan().any()
+        assert not output.isinf().any()
+        return output
+
+    def forward_state_goals(self, state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]]) -> list[tuple[torch.Tensor, list[mm.GroundAction]]]:
+        input_list: list[tuple[mm.State, list[mm.GroundAction], mm.GroundConjunctiveCondition]] = []
+        actions_list: list[list[mm.GroundAction]] = []
+        for state, goal in state_goals:
+            actions = state.generate_applicable_actions()
+            goal = state.get_problem().get_goal_condition()
+            input_list.append((state, actions, goal))
+            actions_list.append(actions)
+        q_values_list: list[torch.Tensor] = self.rgnn.forward(input_list).readout('q')  # type: ignore
+        output = list(zip(q_values_list, actions_list))
+        for tensor, _ in output:
+            assert not tensor.isnan().any()
+            assert not tensor.isinf().any()
+        return output
+
+
+def test_model_wrapper():
+    domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
+    problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    model = RGNNWrapper(domain)
+    current_state = problem.get_initial_state()
+    selected_action = current_state.generate_applicable_actions()[0]
+    successor_state = selected_action.apply(current_state)
+    goal_condition = problem.get_goal_condition()
+    transitions = [Transition(current_state, successor_state, selected_action, -1, goal_condition)]
+    output = model.forward_transitions(transitions)
+    assert output is not None
+    assert isinstance(output, torch.Tensor)
+    assert output.numel() > 0
+
+
+def test_dqn_loss():
+    domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
+    problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    model = RGNNWrapper(domain)
+    loss = DQNLossFunction(model, model, 0.999)
+    input_batch: list[Transition] = []
+    current_state = problem.get_initial_state()
+    for selected_action in current_state.generate_applicable_actions():
+        successor_state = selected_action.apply(current_state)
+        goal_condition = problem.get_goal_condition()
+        input_batch.append(Transition(current_state, successor_state, selected_action, -1, goal_condition))
+    losses = loss(input_batch)
+    assert losses is not None
+    assert len(losses) == len(input_batch)
+
+
+@pytest.mark.parametrize("domain_name, trajectory_sampler", [
+    ('blocks', PolicyTrajectorySampler()),
+    ('blocks', BoltzmannTrajectorySampler(1.0)),
+    ('blocks', GreedyPolicyTrajectorySampler()),
+    ('gripper', PolicyTrajectorySampler()),
+    ('gripper', BoltzmannTrajectorySampler(1.0)),
+    ('gripper', GreedyPolicyTrajectorySampler()),
+])
+def test_trajectory_sampler(domain_name: str, trajectory_sampler: TrajectorySampler):
+    domain_path = DATA_DIR / domain_name / 'domain.pddl'
+    problem_path = DATA_DIR / domain_name / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    model = RGNNWrapper(domain)
+    reward_function = GoalTransitionRewardFunction(1)
+    trajectories = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition())], model, reward_function, 10)
+    assert isinstance(trajectories, list)
+    assert len(trajectories) == 1
+    trajectory = trajectories[0]
+    assert isinstance(trajectory, Trajectory)
+    assert trajectory.is_solution() or len(trajectory) == 10
+    trajectory.validate()  # Performs asserts internally.
+
+
+@pytest.mark.parametrize("domain_name", ['blocks-hard', 'gripper-hard'])
+def test_state_hindsight(domain_name: str):
+    domain_path = DATA_DIR / domain_name / 'domain.pddl'
+    problem_path = DATA_DIR / domain_name / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    model = RGNNWrapper(domain)
+    reward_function = ConstantPenaltyRewardFunction(-1)
+    trajectory_sampler = PolicyTrajectorySampler()
+    trajectory_refiner = StateHindsightTrajectoryRefiner(10)
+    original_trajectories = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition())], model, reward_function, 100)
+    refined_trajectories = trajectory_refiner.refine(original_trajectories, reward_function)
+    assert len(refined_trajectories) < 10
+    for refined_trajectory in refined_trajectories:
+        assert refined_trajectory.is_solution()
+        refined_trajectory.validate()
+
+
+@pytest.mark.parametrize("domain_name", ['blocks-hard', 'gripper-hard'])
+def test_propositional_hindsight(domain_name: str):
+    domain_path = DATA_DIR / domain_name / 'domain.pddl'
+    problem_path = DATA_DIR / domain_name / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    model = RGNNWrapper(domain)
+    reward_function = ConstantPenaltyRewardFunction(-1)
+    trajectory_sampler = PolicyTrajectorySampler()
+    trajectory_refiner = PropositionalHindsightTrajectoryRefiner([problem], 10)
+    original_trajectories = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition())], model, reward_function, 100)
+    refined_trajectories = trajectory_refiner.refine(original_trajectories, reward_function)
+    assert len(refined_trajectories) < 10
+    for refined_trajectory in refined_trajectories:
+        assert refined_trajectory.is_solution()
+        refined_trajectory.validate()
+
+
+@pytest.mark.parametrize("domain_name", ['blocks-hard', 'gripper-hard'])
+def test_lifted_hindsight(domain_name: str):
+    domain_path = DATA_DIR / domain_name / 'domain.pddl'
+    problem_path = DATA_DIR / domain_name / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    model = RGNNWrapper(domain)
+    reward_function = ConstantPenaltyRewardFunction(-1)
+    trajectory_sampler = PolicyTrajectorySampler()
+    trajectory_refiner = LiftedHindsightTrajectoryRefiner([problem], 10)
+    original_trajectories = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition())], model, reward_function, 100)
+    refined_trajectories = trajectory_refiner.refine(original_trajectories, reward_function)
+    assert len(refined_trajectories) < 10
+    for refined_trajectory in refined_trajectories:
+        assert refined_trajectory.is_solution()
+        refined_trajectory.validate()
+
+
+@pytest.mark.parametrize("domain_name", ['blocks', 'gripper'])
+def test_off_policy_algorithm(domain_name: str):
+    domain_path = DATA_DIR / domain_name / 'domain.pddl'
+    problem_path = DATA_DIR / domain_name / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    problems = [problem]
+    model = RGNNWrapper(domain)
+    target_model = RGNNWrapper(domain)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.00000001)
+    lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
+    discount_factor = 0.999
+    loss_function = DQNLossFunction(model, target_model, discount_factor)
+    reward_function = ConstantPenaltyRewardFunction(-1)
+    replay_buffer = PrioritizedReplayBuffer(100)
+    trajectory_sampler = PolicyTrajectorySampler()
+    horizon = 100
+    train_steps = 8
+    problem_sampler = UniformProblemSampler()
+    initial_state_sampler = OriginalInitialStateSampler()
+    goal_condition_sampler = OriginalGoalConditionSampler()
+    trajectory_refiner = PropositionalHindsightTrajectoryRefiner(problems, 10)
+    algorithm = OffPolicyAlgorithm(problems,
+                                   model,
+                                   optimizer,
+                                   lr_scheduler,
+                                   discount_factor,
+                                   loss_function,
+                                   reward_function,
+                                   replay_buffer,
+                                   trajectory_sampler,
+                                   horizon,
+                                   train_steps,
+                                   problem_sampler,
+                                   initial_state_sampler,
+                                   goal_condition_sampler,
+                                   trajectory_refiner)
+    algorithm.fit(2, 4)
+    algorithm.fit(2, 4)
+    algorithm.fit(2, 4)
