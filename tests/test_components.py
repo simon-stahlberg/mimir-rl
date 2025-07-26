@@ -79,14 +79,14 @@ def test_dqn_loss():
     domain = mm.Domain(domain_path)
     problem = mm.Problem(domain, problem_path)
     model = RGNNWrapper(domain)
-    loss = DQNLossFunction(model, model, 0.999)
+    loss = DQNLossFunction(0.999)
     input_batch: list[Transition] = []
     current_state = problem.get_initial_state()
     for selected_action in current_state.generate_applicable_actions():
         successor_state = selected_action.apply(current_state)
         goal_condition = problem.get_goal_condition()
         input_batch.append(Transition(current_state, successor_state, selected_action, -1, goal_condition))
-    losses = loss(input_batch)
+    losses = loss(model, input_batch)
     assert losses is not None
     assert len(losses) == len(input_batch)
 
@@ -177,11 +177,10 @@ def test_off_policy_algorithm(domain_name: str):
     problem = mm.Problem(domain, problem_path)
     problems = [problem]
     model = RGNNWrapper(domain)
-    target_model = RGNNWrapper(domain)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.00000001)
     lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
     discount_factor = 0.999
-    loss_function = DQNLossFunction(model, target_model, discount_factor)
+    loss_function = DQNLossFunction(discount_factor)
     reward_function = ConstantPenaltyRewardFunction(-1)
     replay_buffer = PrioritizedReplayBuffer(100)
     trajectory_sampler = PolicyTrajectorySampler()

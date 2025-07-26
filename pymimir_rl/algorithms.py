@@ -196,7 +196,7 @@ class OffPolicyAlgorithm:
             for _ in range(self.train_steps):
                 transitions, weights, indices = self.replay_buffer.sample(batch_size)
                 self.optimizer.zero_grad()
-                losses = self.loss_function(transitions)
+                losses = self.loss_function(self.model, transitions)
                 total_loss = (losses * weights).mean()
                 total_loss.backward()  # type: ignore
                 self.optimizer.step()
