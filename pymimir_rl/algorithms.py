@@ -1,7 +1,7 @@
 import pymimir as mm
 import torch
 
-from typing import Callable, Union
+from typing import Callable
 
 from .goal_condition_sampling import GoalConditionSampler, OriginalGoalConditionSampler
 from .initial_state_sampling import InitialStateSampler, OriginalInitialStateSampler
@@ -32,10 +32,10 @@ class OffPolicyAlgorithm:
                  trajectory_sampler: TrajectorySampler,
                  horizon: int,
                  train_steps: int,
-                 problem_sampler: Union[ProblemSampler, None] = None,
-                 initial_state_sampler: Union[InitialStateSampler, None] = None,
-                 goal_condition_sampler: Union[GoalConditionSampler, None] = None,
-                 trajectory_refiner: Union[TrajectoryRefiner, None] = None) -> None:
+                 problem_sampler: ProblemSampler | None = None,
+                 initial_state_sampler: InitialStateSampler |  None = None,
+                 goal_condition_sampler: GoalConditionSampler |  None = None,
+                 trajectory_refiner: TrajectoryRefiner |  None = None) -> None:
         """
         Initialize the off-policy RL algorithm with the specified components.
 
