@@ -87,9 +87,10 @@ class PolicyEvaluation:
             self.best_evaluation = evaluation
             return True, evaluation
         for idx, criteria in enumerate(self.criterias):
-            comparison = criteria.compare(self.best_evaluation[idx], evaluation[idx])
+            comparison = criteria.compare(evaluation[idx], self.best_evaluation[idx])
             if comparison < 0:
                 return False, evaluation
             if comparison > 1:
+                self.best_evaluation = evaluation
                 return True, evaluation
         return False, evaluation
