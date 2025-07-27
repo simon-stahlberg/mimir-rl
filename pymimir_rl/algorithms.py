@@ -10,7 +10,7 @@ from .models import QValueModel
 from .problem_sampling import ProblemSampler, UniformProblemSampler
 from .replay_buffers import ReplayBuffer
 from .reward_functions import RewardFunction
-from .trajectories import Trajectory
+from .trajectories import Trajectory, Transition
 from .trajectory_refinements import TrajectoryRefiner, IdentityTrajectoryRefiner
 from .trajectory_sampling import TrajectorySampler
 
@@ -92,6 +92,7 @@ class OffPolicyAlgorithm:
         self._listeners_refine_trajectories: list[Callable[[list[Trajectory]], None]] = []
         self._listeners_pre_collect_experience: list[Callable[[], None]] = []
         self._listeners_post_collect_experience: list[Callable[[], None]] = []
+        self._listeners_train_step: list[Callable[[list[Transition], torch.Tensor], None]] = []
         self._listeners_pre_optimize_model: list[Callable[[], None]] = []
         self._listeners_post_optimize_model: list[Callable[[], None]] = []
 
@@ -123,6 +124,10 @@ class OffPolicyAlgorithm:
         for listener in self._listeners_post_collect_experience:
             listener()
 
+    def _notify_train_step(self, transitions: list[Transition], losses: torch.Tensor) -> None:
+        for listener in self._listeners_train_step:
+            listener(transitions, losses)
+
     def _notify_pre_optimize_model(self) -> None:
         for listener in self._listeners_pre_optimize_model:
             listener()
@@ -151,6 +156,9 @@ class OffPolicyAlgorithm:
 
     def register_post_collect_experience(self, callback: Callable[[], None]) -> None:
         self._listeners_post_collect_experience.append(callback)
+
+    def register_train_step(self, callback: Callable[[list[Transition], torch.Tensor], None]) -> None:
+        self._listeners_train_step.append(callback)
 
     def register_pre_optimize_model(self, callback: Callable[[], None]) -> None:
         self._listeners_pre_optimize_model.append(callback)
@@ -281,5 +289,6 @@ class OffPolicyAlgorithm:
                 total_loss.backward()  # type: ignore
                 self.optimizer.step()
                 self.replay_buffer.update(indices, losses.detach().cpu())
+                self._notify_train_step(transitions, losses.detach())
             self.lr_scheduler.step()
         self._notify_post_optimize_model()

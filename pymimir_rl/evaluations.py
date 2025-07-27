@@ -23,7 +23,7 @@ class EvaluationCriteria(ABC):
             y (int): The second evaluation value.
 
         Returns:
-            int: -1 if x is better than y, 0 if x and y are equal, and 1 if x is worse than y.
+            int: -1 if x is worse than y, 0 if x and y are equal, and 1 if x is better than y.
         """
         pass
 
@@ -90,7 +90,7 @@ class PolicyEvaluation:
             comparison = criteria.compare(evaluation[idx], self.best_evaluation[idx])
             if comparison < 0:
                 return False, evaluation
-            if comparison > 1:
+            if comparison > 0:
                 self.best_evaluation = evaluation
                 return True, evaluation
         return False, evaluation

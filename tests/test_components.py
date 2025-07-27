@@ -235,6 +235,7 @@ def test_algorithm_hooks():
     post_collect_experience: list[bool] = []
     pre_optimize_model: list[bool] = []
     post_optimize_model: list[bool] = []
+    train_step: list[bool] = []
     algorithm.register_sample_problems(lambda x: sample_problems.append(True))
     algorithm.register_sample_initial_states(lambda x: sample_initial_states.append(True))
     algorithm.register_sample_goal_conditions(lambda x: sample_goal_conditions.append(True))
@@ -244,6 +245,7 @@ def test_algorithm_hooks():
     algorithm.register_post_collect_experience(lambda: post_collect_experience.append(True))
     algorithm.register_pre_optimize_model(lambda: pre_optimize_model.append(True))
     algorithm.register_post_optimize_model(lambda: post_optimize_model.append(True))
+    algorithm.register_train_step(lambda x, y: train_step.append(True))
     algorithm.fit(2, 4)
     assert len(sample_problems) == 1
     assert len(sample_initial_states) == 1
@@ -254,6 +256,7 @@ def test_algorithm_hooks():
     assert len(post_collect_experience) == 1
     assert len(pre_optimize_model) == 1
     assert len(post_optimize_model) == 1
+    assert len(train_step) == train_steps
 
 
 def test_evaluation():
