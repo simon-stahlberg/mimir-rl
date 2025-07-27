@@ -25,7 +25,6 @@ class OffPolicyAlgorithm:
                  model: QValueModel,
                  optimizer: torch.optim.Optimizer,
                  lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
-                 discount_factor: float,
                  loss_function: LossFunction,
                  reward_function: RewardFunction,
                  replay_buffer: ReplayBuffer,
@@ -44,7 +43,6 @@ class OffPolicyAlgorithm:
             model (ModelWrapper): The model to be trained.
             optimizer (torch.optim.Optimizer): Optimizer for model parameters.
             lr_scheduler (torch.optim.lr_scheduler.LRScheduler): Learning rate scheduler for the optimizer.
-            discount_factor (float): Discount factor for the reward function.
             loss_function (LossFunction): Function to compute losses.
             reward_function (RewardFunction): Function to compute rewards.
             replay_buffer (ReplayBuffer): Buffer to store experience transitions.
@@ -60,9 +58,6 @@ class OffPolicyAlgorithm:
         assert isinstance(model, QValueModel), "Model must be an instance of ModelWrapper."
         assert isinstance(optimizer, torch.optim.Optimizer), "Optimizer must be an instance of torch.optim.Optimizer."
         assert isinstance(lr_scheduler, torch.optim.lr_scheduler.LRScheduler), "LR Scheduler must be an instance of torch.optim.lr_scheduler.LRScheduler."
-        assert isinstance(discount_factor, float), "Discount factor must be a float."
-        assert discount_factor > 0.0, "Discount factor must be positive."
-        assert discount_factor <= 1.0, "Discount factor must be at most 1."
         assert isinstance(loss_function, LossFunction), "Loss function must be an instance of LossFunction."
         assert isinstance(reward_function, RewardFunction), "Reward function must be an instance of RewardFunction."
         assert isinstance(replay_buffer, ReplayBuffer), "Replay buffer must be an instance of RewardBuffer."
@@ -75,7 +70,6 @@ class OffPolicyAlgorithm:
         self.model = model
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
-        self.discount_factor = discount_factor
         self.loss_function = loss_function
         self.reward_function = reward_function
         self.replay_buffer = replay_buffer
