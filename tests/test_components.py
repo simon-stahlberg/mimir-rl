@@ -106,7 +106,7 @@ def test_state_hindsight(domain_name: str):
     domain = mm.Domain(domain_path)
     problem = mm.Problem(domain, problem_path)
     model = RGNNWrapper(domain)
-    reward_function = ConstantPenaltyRewardFunction(-1)
+    reward_function = ConstantRewardFunction(-1)
     trajectory_sampler = PolicyTrajectorySampler()
     trajectory_refiner = StateHindsightTrajectoryRefiner(10)
     original_trajectories = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition())], model, reward_function, 100)
@@ -124,7 +124,7 @@ def test_propositional_hindsight(domain_name: str):
     domain = mm.Domain(domain_path)
     problem = mm.Problem(domain, problem_path)
     model = RGNNWrapper(domain)
-    reward_function = ConstantPenaltyRewardFunction(-1)
+    reward_function = ConstantRewardFunction(-1)
     trajectory_sampler = PolicyTrajectorySampler()
     trajectory_refiner = PropositionalHindsightTrajectoryRefiner([problem], 10)
     original_trajectories = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition())], model, reward_function, 100)
@@ -142,7 +142,7 @@ def test_lifted_hindsight(domain_name: str):
     domain = mm.Domain(domain_path)
     problem = mm.Problem(domain, problem_path)
     model = RGNNWrapper(domain)
-    reward_function = ConstantPenaltyRewardFunction(-1)
+    reward_function = ConstantRewardFunction(-1)
     trajectory_sampler = PolicyTrajectorySampler()
     trajectory_refiner = LiftedHindsightTrajectoryRefiner([problem], 10)
     original_trajectories = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition())], model, reward_function, 100)
@@ -165,7 +165,7 @@ def test_off_policy_algorithm(domain_name: str):
     lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
     discount_factor = 0.999
     loss_function = DQNLossFunction(discount_factor)
-    reward_function = ConstantPenaltyRewardFunction(-1)
+    reward_function = ConstantRewardFunction(-1)
     replay_buffer = PrioritizedReplayBuffer(100)
     trajectory_sampler = PolicyTrajectorySampler()
     horizon = 100
@@ -204,7 +204,7 @@ def test_algorithm_hooks():
     lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
     discount_factor = 0.999
     loss_function = DQNLossFunction(discount_factor)
-    reward_function = ConstantPenaltyRewardFunction(-1)
+    reward_function = ConstantRewardFunction(-1)
     replay_buffer = PrioritizedReplayBuffer(100)
     trajectory_sampler = PolicyTrajectorySampler()
     horizon = 10
@@ -266,7 +266,7 @@ def test_evaluation():
     problems: list[mm.Problem] = [problem]
     criterias: list[EvaluationCriteria] = [CoverageCriteria(), SolutionLengthCriteria()]
     trajectory_sampler: TrajectorySampler = GreedyPolicyTrajectorySampler()
-    reward_function: RewardFunction = ConstantPenaltyRewardFunction(-1)
+    reward_function: RewardFunction = ConstantRewardFunction(-1)
     horizon: int = 100
     evaluation = PolicyEvaluation(problems, criterias, trajectory_sampler, reward_function, horizon)
     model: QValueModel = RGNNWrapper(domain)

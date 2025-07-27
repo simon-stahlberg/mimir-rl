@@ -26,7 +26,7 @@ from .replay_buffers import (
 from .reward_functions import (
     RewardFunction,
     GoalTransitionRewardFunction,
-    ConstantPenaltyRewardFunction
+    ConstantRewardFunction
 )
 
 from .problem_sampling import (
@@ -66,7 +66,7 @@ from .trajectory_refinements import (
 
 __all__ = [
     "BoltzmannTrajectorySampler",
-    "ConstantPenaltyRewardFunction",
+    "ConstantRewardFunction",
     "CoverageCriteria",
     "DQNLossFunction",
     "EvaluationCriteria",

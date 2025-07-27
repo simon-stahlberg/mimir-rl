@@ -29,7 +29,7 @@ class GoalTransitionRewardFunction(RewardFunction):
         return self.reward_constant if goal_condition.holds(successor_state) else 0
 
 
-class ConstantPenaltyRewardFunction(RewardFunction):
+class ConstantRewardFunction(RewardFunction):
     def __init__(self, penalty_constant: int = -1) -> None:
         self.penalty_constant = penalty_constant
 
