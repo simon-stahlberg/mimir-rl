@@ -24,23 +24,7 @@ class RGNNWrapper(QValueModel):
         )
         self.rgnn = RelationalGraphNeuralNetwork(config)
 
-    def forward_transitions(self, transitions: list[Transition]) -> torch.Tensor:
-        input_list: list[tuple[mm.State, list[mm.GroundAction], mm.GroundConjunctiveCondition]] = []
-        action_indices: list[int] = []
-        for transition in transitions:
-            state = transition.current_state
-            actions = state.generate_applicable_actions()
-            goal = state.get_problem().get_goal_condition()
-            input_list.append((state, actions, goal))
-            action_index = actions.index(transition.selected_action)
-            action_indices.append(action_index)
-        q_values_list: list[torch.Tensor] = self.rgnn.forward(input_list).readout('q')  # type: ignore
-        output = torch.stack([q_values[action_idx] for q_values, action_idx in zip(q_values_list, action_indices)])
-        assert not output.isnan().any()
-        assert not output.isinf().any()
-        return output
-
-    def forward_state_goals(self, state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]]) -> list[tuple[torch.Tensor, list[mm.GroundAction]]]:
+    def forward(self, state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]]) -> list[tuple[torch.Tensor, list[mm.GroundAction]]]:
         input_list: list[tuple[mm.State, list[mm.GroundAction], mm.GroundConjunctiveCondition]] = []
         actions_list: list[list[mm.GroundAction]] = []
         for state, goal in state_goals:
@@ -63,14 +47,14 @@ def test_model_wrapper():
     problem = mm.Problem(domain, problem_path)
     model = RGNNWrapper(domain)
     current_state = problem.get_initial_state()
-    selected_action = current_state.generate_applicable_actions()[0]
-    successor_state = selected_action.apply(current_state)
     goal_condition = problem.get_goal_condition()
-    transitions = [Transition(current_state, successor_state, selected_action, -1, goal_condition)]
-    output = model.forward_transitions(transitions)
+    output = model.forward([(current_state, goal_condition)])
     assert output is not None
-    assert isinstance(output, torch.Tensor)
-    assert output.numel() > 0
+    assert isinstance(output, list)
+    assert len(output) > 0
+    assert isinstance(output[0][0], torch.Tensor)
+    assert isinstance(output[0][1], list)
+    assert len(output[0][1]) > 0
 
 
 def test_dqn_loss():
@@ -291,4 +275,3 @@ def test_evaluation():
     assert best1
     assert not best2
     assert result1 == result2
-    pass

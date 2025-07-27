@@ -46,7 +46,7 @@ class TrajectorySampler(ABC):
                 context_indices = [idx for idx, context in enumerate(rollout_contexts) if not context.done]
                 if len(state_goals) == 0:
                     break  # All
-                q_values_batch = model.forward_state_goals(state_goals)
+                q_values_batch = model.forward(state_goals)
                 for rollout_idx, (q_values, applicable_actions) in zip(context_indices, q_values_batch):
                     context = rollout_contexts[rollout_idx]
                     q_values = q_values.cpu()  # Move the result to CPU, the remaining operations are very cheap.

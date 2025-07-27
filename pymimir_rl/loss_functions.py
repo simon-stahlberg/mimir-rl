@@ -23,7 +23,9 @@ class DQNLossFunction(LossFunction):
     def __call__(self, model: QValueModel, transitions: list[Transition]) -> torch.Tensor:
         dead_end_value = -10000
         targets = self._compute_targets(model, transitions, dead_end_value)
-        predictions = model.forward_transitions(transitions)
+        state_goals = [(transition.current_state, transition.goal_condition) for transition in transitions]
+        result = model.forward(state_goals)
+        predictions = torch.stack([q_values[actions.index(transition.selected_action)] for (q_values, actions), transition in zip(result, transitions)])
         losses = huber_loss(predictions, targets, delta=1.0, reduction='none')
         return losses
 
@@ -48,7 +50,7 @@ class DQNLossFunction(LossFunction):
             model.eval()
             device = next(model.parameters()).device
             state_goals = [(transition.current_state, transition.goal_condition) for transition in transitions]
-            q_values_list = model.forward_state_goals(state_goals)
+            q_values_list = model.forward(state_goals)
             max_values = torch.stack([self._mellowmax(q_values, 10.0) if (q_values.numel() > 0) else torch.tensor(dead_end_value, device=device) for q_values, _ in q_values_list])
             rewards = torch.tensor([transition.reward for transition in transitions], requires_grad=False, device=device)
             achieves_goal = torch.tensor([transition.achieves_goal for transition in transitions], dtype=torch.float, requires_grad=False, device=device)
