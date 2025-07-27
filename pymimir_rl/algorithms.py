@@ -1,7 +1,7 @@
 import pymimir as mm
 import torch
 
-from typing import Union
+from typing import Callable, Union
 
 from .goal_condition_sampling import GoalConditionSampler, OriginalGoalConditionSampler
 from .initial_state_sampling import InitialStateSampler, OriginalInitialStateSampler
@@ -90,6 +90,79 @@ class OffPolicyAlgorithm:
         assert isinstance(self.initial_state_sampler, InitialStateSampler), "Initial state sampler must be an instance of InitialStateSampler."
         assert isinstance(self.goal_condition_sampler, GoalConditionSampler), "Goal condition sampler must be an instance of GoalConditionSampler."
         assert isinstance(self.trajectory_refiner, TrajectoryRefiner), "Trajectory refiner must be an instance of TrajectoryRefiner."
+        # Initialize listener lists.
+        self._listeners_sample_problems: list[Callable[[list[mm.Problem]], None]] = []
+        self._listeners_sample_initial_states: list[Callable[[list[mm.State]], None]] = []
+        self._listeners_sample_goal_conditions: list[Callable[[list[mm.GroundConjunctiveCondition]], None]] = []
+        self._listeners_sample_trajectories: list[Callable[[list[Trajectory]], None]] = []
+        self._listeners_refine_trajectories: list[Callable[[list[Trajectory]], None]] = []
+        self._listeners_pre_collect_experience: list[Callable[[], None]] = []
+        self._listeners_post_collect_experience: list[Callable[[], None]] = []
+        self._listeners_pre_optimize_model: list[Callable[[], None]] = []
+        self._listeners_post_optimize_model: list[Callable[[], None]] = []
+
+    def _notify_sample_problems(self, result: list[mm.Problem]) -> None:
+        for listener in self._listeners_sample_problems:
+            listener(result)
+
+    def _notify_sample_initial_states(self, result: list[mm.State]) -> None:
+        for listener in self._listeners_sample_initial_states:
+            listener(result)
+
+    def _notify_sample_goal_conditions(self, result: list[mm.GroundConjunctiveCondition]) -> None:
+        for listener in self._listeners_sample_goal_conditions:
+            listener(result)
+
+    def _notify_sample_trajectories(self, result: list[Trajectory]) -> None:
+        for listener in self._listeners_sample_trajectories:
+            listener(result)
+
+    def _notify_refine_trajectories(self, result: list[Trajectory]) -> None:
+        for listener in self._listeners_refine_trajectories:
+            listener(result)
+
+    def _notify_pre_collect_experience(self) -> None:
+        for listener in self._listeners_pre_collect_experience:
+            listener()
+
+    def _notify_post_collect_experience(self) -> None:
+        for listener in self._listeners_post_collect_experience:
+            listener()
+
+    def _notify_pre_optimize_model(self) -> None:
+        for listener in self._listeners_pre_optimize_model:
+            listener()
+
+    def _notify_post_optimize_model(self) -> None:
+        for listener in self._listeners_post_optimize_model:
+            listener()
+
+    def register_sample_problems(self, callback: Callable[[list[mm.Problem]], None]) -> None:
+        self._listeners_sample_problems.append(callback)
+
+    def register_sample_initial_states(self, callback: Callable[[list[mm.State]], None]) -> None:
+        self._listeners_sample_initial_states.append(callback)
+
+    def register_sample_goal_conditions(self, callback: Callable[[list[mm.GroundConjunctiveCondition]], None]) -> None:
+        self._listeners_sample_goal_conditions.append(callback)
+
+    def register_sample_trajectories(self, callback: Callable[[list[Trajectory]], None]) -> None:
+        self._listeners_sample_trajectories.append(callback)
+
+    def register_refine_trajectories(self, callback: Callable[[list[Trajectory]], None]) -> None:
+        self._listeners_refine_trajectories.append(callback)
+
+    def register_pre_collect_experience(self, callback: Callable[[], None]) -> None:
+        self._listeners_pre_collect_experience.append(callback)
+
+    def register_post_collect_experience(self, callback: Callable[[], None]) -> None:
+        self._listeners_post_collect_experience.append(callback)
+
+    def register_pre_optimize_model(self, callback: Callable[[], None]) -> None:
+        self._listeners_pre_optimize_model.append(callback)
+
+    def register_post_optimize_model(self, callback: Callable[[], None]) -> None:
+        self._listeners_post_optimize_model.append(callback)
 
     def sample_problems(self, n: int) -> list[mm.Problem]:
         """
@@ -101,7 +174,9 @@ class OffPolicyAlgorithm:
         Returns:
             list[mm.Problem]: A list of sampled problems.
         """
-        return self.problem_sampler.sample(self.problems, n)
+        result = self.problem_sampler.sample(self.problems, n)
+        self._notify_sample_problems(result)
+        return result
 
     def sample_initial_states(self, problems: list[mm.Problem]) -> list[mm.State]:
         """
@@ -113,7 +188,9 @@ class OffPolicyAlgorithm:
         Returns:
             mm.State: An initial state.
         """
-        return self.initial_state_sampler.sample(problems)
+        result = self.initial_state_sampler.sample(problems)
+        self._notify_sample_initial_states(result)
+        return result
 
     def sample_goal_conditions(self, problems: list[mm.Problem]) -> list[mm.GroundConjunctiveCondition]:
         """
@@ -125,7 +202,9 @@ class OffPolicyAlgorithm:
         Returns:
             list[mm.GroundConjunctiveCondition]: A list of sampled goal conditions.
         """
-        return self.goal_condition_sampler.sample(problems)
+        result = self.goal_condition_sampler.sample(problems)
+        self._notify_sample_goal_conditions(result)
+        return result
 
     def sample_trajectories(self, state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]], model: QValueModel, reward_function: RewardFunction) -> list[Trajectory]:
         """
@@ -139,7 +218,9 @@ class OffPolicyAlgorithm:
         Returns:
             list[Trajectory]: A list of sampled trajectories.
         """
-        return self.trajectory_sampler.sample(state_goals, model, reward_function, self.horizon)
+        result = self.trajectory_sampler.sample(state_goals, model, reward_function, self.horizon)
+        self._notify_sample_trajectories(result)
+        return result
 
     def refine_trajectories(self, trajectories: list[Trajectory], reward_function: RewardFunction) -> list[Trajectory]:
         """
@@ -152,7 +233,9 @@ class OffPolicyAlgorithm:
         Returns:
             list[Trajectory]: A refined list of trajectories.
         """
-        return self.trajectory_refiner.refine(trajectories, reward_function)
+        result = self.trajectory_refiner.refine(trajectories, reward_function)
+        self._notify_refine_trajectories(result)
+        return result
 
     def fit(self, rollout_size: int, batch_size: int) -> None:
         """
@@ -172,6 +255,7 @@ class OffPolicyAlgorithm:
         Args:
             rollout_size (int): The number of trajectories to sample.
         """
+        self._notify_pre_collect_experience()
         with torch.no_grad():
             self.model.eval()
             problems = self.sample_problems(rollout_size)
@@ -183,6 +267,7 @@ class OffPolicyAlgorithm:
             for refined_trajectory in refined_trajectories:
                 for refined_transition in refined_trajectory:
                     self.replay_buffer.push(refined_transition)
+        self._notify_post_collect_experience()
 
     def optimize_model(self, batch_size: int) -> None:
         """
@@ -191,6 +276,7 @@ class OffPolicyAlgorithm:
         Args:
             batch_size (int): The batch size for model optimization.
         """
+        self._notify_pre_optimize_model()
         if len(self.replay_buffer) > 0:
             self.model.train()
             for _ in range(self.train_steps):
@@ -202,3 +288,4 @@ class OffPolicyAlgorithm:
                 self.optimizer.step()
                 self.replay_buffer.update(indices, losses.detach().cpu())
             self.lr_scheduler.step()
+        self._notify_post_optimize_model()

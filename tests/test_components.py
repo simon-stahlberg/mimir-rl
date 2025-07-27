@@ -177,7 +177,7 @@ def test_off_policy_algorithm(domain_name: str):
     problem = mm.Problem(domain, problem_path)
     problems = [problem]
     model = RGNNWrapper(domain)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.00000001)
+    optimizer = torch.optim.Adam(model.parameters())
     lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
     discount_factor = 0.999
     loss_function = DQNLossFunction(discount_factor)
@@ -208,3 +208,67 @@ def test_off_policy_algorithm(domain_name: str):
     algorithm.fit(2, 4)
     algorithm.fit(2, 4)
     algorithm.fit(2, 4)
+
+def test_algorithm_hooks():
+    domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
+    problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    problems = [problem]
+    model = RGNNWrapper(domain)
+    optimizer = torch.optim.Adam(model.parameters())
+    lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
+    discount_factor = 0.999
+    loss_function = DQNLossFunction(discount_factor)
+    reward_function = ConstantPenaltyRewardFunction(-1)
+    replay_buffer = PrioritizedReplayBuffer(100)
+    trajectory_sampler = PolicyTrajectorySampler()
+    horizon = 10
+    train_steps = 2
+    problem_sampler = UniformProblemSampler()
+    initial_state_sampler = OriginalInitialStateSampler()
+    goal_condition_sampler = OriginalGoalConditionSampler()
+    trajectory_refiner = PropositionalHindsightTrajectoryRefiner(problems, 10)
+    algorithm = OffPolicyAlgorithm(problems,
+                                   model,
+                                   optimizer,
+                                   lr_scheduler,
+                                   discount_factor,
+                                   loss_function,
+                                   reward_function,
+                                   replay_buffer,
+                                   trajectory_sampler,
+                                   horizon,
+                                   train_steps,
+                                   problem_sampler,
+                                   initial_state_sampler,
+                                   goal_condition_sampler,
+                                   trajectory_refiner)
+    sample_problems: list[bool] = []
+    sample_initial_states: list[bool] = []
+    sample_goal_conditions: list[bool] = []
+    sample_trajectories: list[bool] = []
+    refine_trajectories: list[bool] = []
+    pre_collect_experience: list[bool] = []
+    post_collect_experience: list[bool] = []
+    pre_optimize_model: list[bool] = []
+    post_optimize_model: list[bool] = []
+    algorithm.register_sample_problems(lambda x: sample_problems.append(True))
+    algorithm.register_sample_initial_states(lambda x: sample_initial_states.append(True))
+    algorithm.register_sample_goal_conditions(lambda x: sample_goal_conditions.append(True))
+    algorithm.register_sample_trajectories(lambda x: sample_trajectories.append(True))
+    algorithm.register_refine_trajectories(lambda x: refine_trajectories.append(True))
+    algorithm.register_pre_collect_experience(lambda: pre_collect_experience.append(True))
+    algorithm.register_post_collect_experience(lambda: post_collect_experience.append(True))
+    algorithm.register_pre_optimize_model(lambda: pre_optimize_model.append(True))
+    algorithm.register_post_optimize_model(lambda: post_optimize_model.append(True))
+    algorithm.fit(2, 4)
+    assert len(sample_problems) == 1
+    assert len(sample_initial_states) == 1
+    assert len(sample_goal_conditions) == 1
+    assert len(sample_trajectories) == 1
+    assert len(refine_trajectories) == 1
+    assert len(pre_collect_experience) == 1
+    assert len(post_collect_experience) == 1
+    assert len(pre_optimize_model) == 1
+    assert len(post_optimize_model) == 1
