@@ -272,3 +272,23 @@ def test_algorithm_hooks():
     assert len(post_collect_experience) == 1
     assert len(pre_optimize_model) == 1
     assert len(post_optimize_model) == 1
+
+
+def test_evaluation():
+    domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
+    problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    problems: list[mm.Problem] = [problem]
+    criterias: list[EvaluationCriteria] = [CoverageCriteria(), SolutionLengthCriteria()]
+    trajectory_sampler: TrajectorySampler = GreedyPolicyTrajectorySampler()
+    reward_function: RewardFunction = ConstantPenaltyRewardFunction(-1)
+    horizon: int = 100
+    evaluation = PolicyEvaluation(problems, criterias, trajectory_sampler, reward_function, horizon)
+    model: QValueModel = RGNNWrapper(domain)
+    best1, result1 = evaluation.evaluate(model)
+    best2, result2 = evaluation.evaluate(model)
+    assert best1
+    assert not best2
+    assert result1 == result2
+    pass
