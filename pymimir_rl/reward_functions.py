@@ -17,7 +17,7 @@ class RewardFunction(ABC):
 
 class GoalTransitionRewardFunction(RewardFunction):
     def __init__(self, reward_constant: int = 1) -> None:
-        self.reward_constant = reward_constant
+        self.constant = reward_constant
 
     def __call__(
         self,
@@ -26,12 +26,12 @@ class GoalTransitionRewardFunction(RewardFunction):
         successor_state: mm.State,
         goal_condition: mm.GroundConjunctiveCondition,
     ) -> float:
-        return self.reward_constant if goal_condition.holds(successor_state) else 0
+        return self.constant if goal_condition.holds(successor_state) else 0
 
 
 class ConstantRewardFunction(RewardFunction):
     def __init__(self, penalty_constant: int = -1) -> None:
-        self.penalty_constant = penalty_constant
+        self.constant = penalty_constant
 
     def __call__(
         self,
@@ -40,4 +40,4 @@ class ConstantRewardFunction(RewardFunction):
         successor_state: mm.State,
         goal_condition: mm.GroundConjunctiveCondition,
     ) -> float:
-        return self.penalty_constant
+        return self.constant

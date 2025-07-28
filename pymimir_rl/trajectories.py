@@ -9,6 +9,7 @@ class Transition:
                  successor_state: mm.State,
                  selected_action: mm.GroundAction,
                  reward: float,
+                 future_rewards: float,
                  goal_condition: mm.GroundConjunctiveCondition) -> None:
         assert current_state.get_problem() == successor_state.get_problem(), "Origin and destination states must belong to the same problem."
         self.current_state = current_state
@@ -16,6 +17,7 @@ class Transition:
         self.selected_action = selected_action
         self.goal_condition = goal_condition
         self.reward = reward
+        self.future_rewards = future_rewards
         self.achieves_goal = goal_condition.holds(successor_state)
 
     def __str__(self) -> str:
@@ -38,7 +40,8 @@ class Trajectory:
             successor_state = state_sequence[idx + 1]
             selected_action = action_sequence[idx]
             reward = reward_sequence[idx]
-            transition = Transition(current_state, successor_state, selected_action, reward, goal_condition)
+            future_rewards = sum(reward_sequence[idx + 1:])
+            transition = Transition(current_state, successor_state, selected_action, reward, future_rewards, goal_condition)
             assert (idx >= len(action_sequence) - 1) or (not transition.achieves_goal), "The trajectory must terminate on goal states."
             self.transitions.append(transition)
 
@@ -96,6 +99,11 @@ class Trajectory:
             assert transition.selected_action.get_precondition().holds(transition.current_state)
             assert transition.selected_action.apply(transition.current_state) == transition.successor_state
             assert not transition.goal_condition.holds(transition.current_state)
+        if len(self.transitions) > 0:
+            expected_rewards = sum(transition.reward for transition in self.transitions)
+            actual_rewards = self.transitions[0].reward + self.transitions[0].future_rewards
+            assert actual_rewards == expected_rewards, "Expected and actual rewards must not differ."
+
 
     def __str__(self) -> str:
         return '[' + str.join(', ', [str(transition) for transition in self.transitions]) + ']'

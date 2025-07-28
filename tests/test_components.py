@@ -63,16 +63,19 @@ def test_dqn_loss():
     domain = mm.Domain(domain_path)
     problem = mm.Problem(domain, problem_path)
     model = RGNNWrapper(domain)
-    loss = DQNLossFunction(0.999)
-    input_batch: list[Transition] = []
+    loss = DQNLossFunction(0.999, 10.0)
+    transitions: list[Transition] = []
     current_state = problem.get_initial_state()
     for selected_action in current_state.generate_applicable_actions():
         successor_state = selected_action.apply(current_state)
         goal_condition = problem.get_goal_condition()
-        input_batch.append(Transition(current_state, successor_state, selected_action, -1, goal_condition))
-    losses = loss(model, input_batch)
+        transitions.append(Transition(current_state, successor_state, selected_action, -1, 0, goal_condition))
+    state_goals = [(transition.current_state, transition.goal_condition) for transition in transitions]
+    all_q_values = model.forward(state_goals)
+    selected_q_values = torch.stack([q_values[actions.index(transition.selected_action)] for (q_values, actions), transition in zip(all_q_values, transitions)])
+    losses = loss(all_q_values, selected_q_values, transitions)
     assert losses is not None
-    assert len(losses) == len(input_batch)
+    assert len(losses) == len(transitions)
 
 
 @pytest.mark.parametrize("domain_name, trajectory_sampler", [
@@ -164,7 +167,7 @@ def test_off_policy_algorithm(domain_name: str):
     optimizer = torch.optim.Adam(model.parameters())
     lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
     discount_factor = 0.999
-    loss_function = DQNLossFunction(discount_factor)
+    loss_function = DQNLossFunction(discount_factor, 10.0)
     reward_function = ConstantRewardFunction(-1)
     replay_buffer = PrioritizedReplayBuffer(100)
     trajectory_sampler = PolicyTrajectorySampler()
@@ -202,7 +205,7 @@ def test_algorithm_hooks():
     optimizer = torch.optim.Adam(model.parameters())
     lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
     discount_factor = 0.999
-    loss_function = DQNLossFunction(discount_factor)
+    loss_function = DQNLossFunction(discount_factor, 100.0)
     reward_function = ConstantRewardFunction(-1)
     replay_buffer = PrioritizedReplayBuffer(100)
     trajectory_sampler = PolicyTrajectorySampler()
@@ -245,7 +248,7 @@ def test_algorithm_hooks():
     algorithm.register_post_collect_experience(lambda: post_collect_experience.append(True))
     algorithm.register_pre_optimize_model(lambda: pre_optimize_model.append(True))
     algorithm.register_post_optimize_model(lambda: post_optimize_model.append(True))
-    algorithm.register_train_step(lambda x, y: train_step.append(True))
+    algorithm.register_train_step(lambda x, t1, t2, t3: train_step.append(True))
     algorithm.fit(2, 4)
     assert len(sample_problems) == 1
     assert len(sample_initial_states) == 1

@@ -9,7 +9,7 @@ from .loss_functions import LossFunction
 from .models import QValueModel
 from .problem_sampling import ProblemSampler, UniformProblemSampler
 from .replay_buffers import ReplayBuffer
-from .reward_functions import RewardFunction
+from .reward_functions import ConstantRewardFunction, GoalTransitionRewardFunction, RewardFunction
 from .trajectories import Trajectory, Transition
 from .trajectory_refinements import TrajectoryRefiner, IdentityTrajectoryRefiner
 from .trajectory_sampling import TrajectorySampler
@@ -92,7 +92,7 @@ class OffPolicyAlgorithm:
         self._listeners_refine_trajectories: list[Callable[[list[Trajectory]], None]] = []
         self._listeners_pre_collect_experience: list[Callable[[], None]] = []
         self._listeners_post_collect_experience: list[Callable[[], None]] = []
-        self._listeners_train_step: list[Callable[[list[Transition], torch.Tensor], None]] = []
+        self._listeners_train_step: list[Callable[[list[Transition], torch.Tensor, torch.Tensor, torch.Tensor], None]] = []
         self._listeners_pre_optimize_model: list[Callable[[], None]] = []
         self._listeners_post_optimize_model: list[Callable[[], None]] = []
 
@@ -124,9 +124,9 @@ class OffPolicyAlgorithm:
         for listener in self._listeners_post_collect_experience:
             listener()
 
-    def _notify_train_step(self, transitions: list[Transition], losses: torch.Tensor) -> None:
+    def _notify_train_step(self, transitions: list[Transition], q_values: torch.Tensor, rl_losses: torch.Tensor, bounds_losses: torch.Tensor) -> None:
         for listener in self._listeners_train_step:
-            listener(transitions, losses)
+            listener(transitions, q_values, rl_losses, bounds_losses)
 
     def _notify_pre_optimize_model(self) -> None:
         for listener in self._listeners_pre_optimize_model:
@@ -157,7 +157,7 @@ class OffPolicyAlgorithm:
     def register_post_collect_experience(self, callback: Callable[[], None]) -> None:
         self._listeners_post_collect_experience.append(callback)
 
-    def register_train_step(self, callback: Callable[[list[Transition], torch.Tensor], None]) -> None:
+    def register_train_step(self, callback: Callable[[list[Transition], torch.Tensor, torch.Tensor, torch.Tensor], None]) -> None:
         self._listeners_train_step.append(callback)
 
     def register_pre_optimize_model(self, callback: Callable[[], None]) -> None:
@@ -271,6 +271,33 @@ class OffPolicyAlgorithm:
                     self.replay_buffer.push(refined_transition)
         self._notify_post_collect_experience()
 
+    def get_bounds(self, transitions: list[Transition], device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+        n = len(transitions)
+        # The bounds for the ConstantRewardFunction correlates with the length of the trajectory it originates from.
+        if isinstance(self.reward_function, ConstantRewardFunction):
+            constant = float(self.reward_function.constant)
+            if constant < 0:
+                lower_bounds = torch.tensor([t.reward + t.future_rewards for t in transitions], device=device)
+                upper_bounds = torch.full((n,), constant, device=device)
+            else:
+                lower_bounds = torch.full((n,), 0.0, device=device)
+                upper_bounds = torch.tensor([t.reward + t.future_rewards for t in transitions], device=device)
+        # The bounds for the GoalTransitionRewardFunction strictly depends on the constant used to initialize it.
+        elif isinstance(self.reward_function, GoalTransitionRewardFunction):
+            constant = float(self.reward_function.constant)
+            if constant < 0:
+                lower_bounds = torch.full((n,), constant, device=device)
+                upper_bounds = torch.full((n,), 0.0, device=device)
+            else:
+                lower_bounds = torch.full((n,), 0.0, device=device)
+                upper_bounds = torch.full((n,), constant, device=device)
+        # If the reward function is not known, we use -inf and inf as bounds.
+        else:
+            lower_bounds = torch.full((n,), float('-inf'), device=device)
+            upper_bounds = torch.full((n,), float('inf'), device=device)
+        return lower_bounds, upper_bounds
+
+
     def optimize_model(self, batch_size: int) -> None:
         """
         Update the strategy using a batch of data.
@@ -284,11 +311,16 @@ class OffPolicyAlgorithm:
             for _ in range(self.train_steps):
                 transitions, weights, indices = self.replay_buffer.sample(batch_size)
                 self.optimizer.zero_grad()
-                losses = self.loss_function(self.model, transitions)
-                total_loss = (losses * weights).mean()
+                state_goals = [(transition.current_state, transition.goal_condition) for transition in transitions]
+                all_q_values = self.model.forward(state_goals)
+                selected_q_values = torch.stack([q_values[actions.index(transition.selected_action)] for (q_values, actions), transition in zip(all_q_values, transitions)])
+                rl_losses = self.loss_function(all_q_values, selected_q_values, transitions)
+                lower_bounds, upper_bounds = self.get_bounds(transitions, rl_losses.device)
+                bounds_losses = selected_q_values - selected_q_values.clamp(lower_bounds, upper_bounds).detach()
+                total_loss = (rl_losses * weights).mean() + (bounds_losses * weights).mean()
                 total_loss.backward()  # type: ignore
                 self.optimizer.step()
-                self.replay_buffer.update(indices, losses.detach().cpu())
-                self._notify_train_step(transitions, losses.detach())
+                self.replay_buffer.update(indices, rl_losses.detach().cpu())
+                self._notify_train_step(transitions, selected_q_values.detach(), rl_losses.detach(), bounds_losses.detach())
             self.lr_scheduler.step()
         self._notify_post_optimize_model()
