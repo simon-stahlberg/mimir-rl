@@ -21,6 +21,12 @@ class DQNLossFunction(LossFunction):
         self.discount_factor = discount_factor
         self.mellowmax_factor = mellowmax_factor
 
+    def get_mellowmax_factor(self) -> float:
+        return self.mellowmax_factor
+
+    def set_mellowmax_factor(self, factor: float) -> None:
+        self.mellowmax_factor = factor
+
     def __call__(self, all_q_values: list[tuple[torch.Tensor, list[mm.GroundAction]]], selected_q_values: torch.Tensor, transitions: list[Transition]) -> torch.Tensor:
         dead_end_value = -10000
         target_q_values = self._compute_targets(all_q_values, transitions, dead_end_value, selected_q_values.device)

@@ -1,6 +1,7 @@
 import pymimir as mm
 import torch
 
+from torch.nn.functional import huber_loss
 from typing import Callable
 
 from .goal_condition_sampling import GoalConditionSampler, OriginalGoalConditionSampler
@@ -316,7 +317,8 @@ class OffPolicyAlgorithm:
                 selected_q_values = torch.stack([q_values[actions.index(transition.selected_action)] for (q_values, actions), transition in zip(all_q_values, transitions)])
                 rl_losses = self.loss_function(all_q_values, selected_q_values, transitions)
                 lower_bounds, upper_bounds = self.get_bounds(transitions, rl_losses.device)
-                bounds_losses = selected_q_values - selected_q_values.clamp(lower_bounds, upper_bounds).detach()
+                bounds_errors = selected_q_values - selected_q_values.clamp(lower_bounds, upper_bounds).detach()
+                bounds_losses = huber_loss(bounds_errors, torch.zeros_like(bounds_errors), delta=1.0, reduction='none')
                 total_loss = (rl_losses * weights).mean() + (bounds_losses * weights).mean()
                 total_loss.backward()  # type: ignore
                 self.optimizer.step()
