@@ -63,7 +63,7 @@ def test_dqn_loss():
     domain = mm.Domain(domain_path)
     problem = mm.Problem(domain, problem_path)
     model = RGNNWrapper(domain)
-    loss = DQNLossFunction(0.999, 10.0)
+    loss = DQNLossFunction(model, 0.999, 10.0)
     transitions: list[Transition] = []
     current_state = problem.get_initial_state()
     for selected_action in current_state.generate_applicable_actions():
@@ -73,7 +73,7 @@ def test_dqn_loss():
     state_goals = [(transition.current_state, transition.goal_condition) for transition in transitions]
     all_q_values = model.forward(state_goals)
     selected_q_values = torch.stack([q_values[actions.index(transition.selected_action)] for (q_values, actions), transition in zip(all_q_values, transitions)])
-    losses = loss(all_q_values, selected_q_values, transitions)
+    losses = loss(selected_q_values, transitions)
     assert losses is not None
     assert len(losses) == len(transitions)
 
@@ -167,11 +167,13 @@ def test_off_policy_algorithm(domain_name: str):
     optimizer = torch.optim.Adam(model.parameters())
     lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
     discount_factor = 0.999
-    loss_function = DQNLossFunction(discount_factor, 10.0)
+    loss_function = DQNLossFunction(model, discount_factor, 10.0)
     reward_function = ConstantRewardFunction(-1)
     replay_buffer = PrioritizedReplayBuffer(100)
     trajectory_sampler = PolicyTrajectorySampler()
     horizon = 100
+    rollout_count = 2
+    batch_size = 4
     train_steps = 8
     problem_sampler = UniformProblemSampler()
     initial_state_sampler = OriginalInitialStateSampler()
@@ -186,14 +188,16 @@ def test_off_policy_algorithm(domain_name: str):
                                    replay_buffer,
                                    trajectory_sampler,
                                    horizon,
+                                   rollout_count,
+                                   batch_size,
                                    train_steps,
                                    problem_sampler,
                                    initial_state_sampler,
                                    goal_condition_sampler,
                                    trajectory_refiner)
-    algorithm.fit(2, 4)
-    algorithm.fit(2, 4)
-    algorithm.fit(2, 4)
+    algorithm.fit()
+    algorithm.fit()
+    algorithm.fit()
 
 def test_algorithm_hooks():
     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
@@ -205,12 +209,14 @@ def test_algorithm_hooks():
     optimizer = torch.optim.Adam(model.parameters())
     lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
     discount_factor = 0.999
-    loss_function = DQNLossFunction(discount_factor, 100.0)
+    loss_function = DQNLossFunction(model, discount_factor, 100.0)
     reward_function = ConstantRewardFunction(-1)
     replay_buffer = PrioritizedReplayBuffer(100)
     trajectory_sampler = PolicyTrajectorySampler()
     horizon = 10
-    train_steps = 2
+    rollout_count = 2
+    batch_size = 4
+    train_steps = 8
     problem_sampler = UniformProblemSampler()
     initial_state_sampler = OriginalInitialStateSampler()
     goal_condition_sampler = OriginalGoalConditionSampler()
@@ -224,6 +230,8 @@ def test_algorithm_hooks():
                                    replay_buffer,
                                    trajectory_sampler,
                                    horizon,
+                                   rollout_count,
+                                   batch_size,
                                    train_steps,
                                    problem_sampler,
                                    initial_state_sampler,
@@ -249,7 +257,7 @@ def test_algorithm_hooks():
     algorithm.register_pre_optimize_model(lambda: pre_optimize_model.append(True))
     algorithm.register_post_optimize_model(lambda: post_optimize_model.append(True))
     algorithm.register_train_step(lambda x, t1, t2, t3: train_step.append(True))
-    algorithm.fit(2, 4)
+    algorithm.fit()
     assert len(sample_problems) == 1
     assert len(sample_initial_states) == 1
     assert len(sample_goal_conditions) == 1

@@ -31,6 +31,8 @@ class OffPolicyAlgorithm:
                  replay_buffer: ReplayBuffer,
                  trajectory_sampler: TrajectorySampler,
                  horizon: int,
+                 rollout_count: int,
+                 batch_size: int,
                  train_steps: int,
                  problem_sampler: ProblemSampler | None = None,
                  initial_state_sampler: InitialStateSampler |  None = None,
@@ -49,6 +51,9 @@ class OffPolicyAlgorithm:
             replay_buffer (ReplayBuffer): Buffer to store experience transitions.
             trajectory_sampler (TrajectorySampler): Sampler for generating trajectories.
             horizon (int): Maximum length of the sampled trajectories.
+            rollout_count (int): Number of sampled trajectories.
+            batch_size (int): Mini-batch size used for each optimization step.
+            train_steps (int): Number of optimization steps to perform.
             problem_sampler (ProblemSampler, optional): Sampler for selecting problems. Defaults to UniformProblemSampler.
             initial_state_sampler (InitialStateSampler, optional): Sampler for initial states. Defaults to OriginalInitialStateSampler.
             goal_condition_sampler (GoalConditionSampler, optional): Sampler for goal conditions. Defaults to OriginalGoalConditionSampler.
@@ -76,6 +81,8 @@ class OffPolicyAlgorithm:
         self.replay_buffer = replay_buffer
         self.trajectory_sampler = trajectory_sampler
         self.horizon = horizon
+        self.rollout_count = rollout_count
+        self.batch_size = batch_size
         self.train_steps = train_steps
         self.problem_sampler = problem_sampler or UniformProblemSampler()
         self.initial_state_sampler = initial_state_sampler or OriginalInitialStateSampler()
@@ -240,16 +247,12 @@ class OffPolicyAlgorithm:
         self._notify_refine_trajectories(result)
         return result
 
-    def fit(self, rollout_size: int, batch_size: int) -> None:
+    def fit(self) -> None:
         """
         Run one step of experience collection with refinement and model optimization.
-
-        Args:
-            rollout_size (int): The number of trajectories to sample.
-            batch_size (int): The batch size for model optimization.
         """
-        self.collect_experience(rollout_size)
-        self.optimize_model(batch_size)
+        self.collect_experience(self.rollout_count)
+        self.optimize_model(self.batch_size)
 
     def collect_experience(self, rollout_size: int) -> None:
         """
@@ -278,24 +281,24 @@ class OffPolicyAlgorithm:
         if isinstance(self.reward_function, ConstantRewardFunction):
             constant = float(self.reward_function.constant)
             if constant < 0:
-                lower_bounds = torch.tensor([t.reward + t.future_rewards for t in transitions], device=device)
-                upper_bounds = torch.full((n,), constant, device=device)
+                lower_bounds = torch.tensor([t.reward + t.future_rewards for t in transitions], dtype=torch.float, device=device)
+                upper_bounds = torch.full((n,), constant, dtype=torch.float, device=device)
             else:
-                lower_bounds = torch.full((n,), 0.0, device=device)
-                upper_bounds = torch.tensor([t.reward + t.future_rewards for t in transitions], device=device)
+                lower_bounds = torch.full((n,), 0.0, dtype=torch.float, device=device)
+                upper_bounds = torch.tensor([t.reward + t.future_rewards for t in transitions], dtype=torch.float, device=device)
         # The bounds for the GoalTransitionRewardFunction strictly depends on the constant used to initialize it.
         elif isinstance(self.reward_function, GoalTransitionRewardFunction):
             constant = float(self.reward_function.constant)
             if constant < 0:
-                lower_bounds = torch.full((n,), constant, device=device)
-                upper_bounds = torch.full((n,), 0.0, device=device)
+                lower_bounds = torch.full((n,), constant, dtype=torch.float, device=device)
+                upper_bounds = torch.full((n,), 0.0, dtype=torch.float, device=device)
             else:
-                lower_bounds = torch.full((n,), 0.0, device=device)
-                upper_bounds = torch.full((n,), constant, device=device)
+                lower_bounds = torch.full((n,), 0.0, dtype=torch.float, device=device)
+                upper_bounds = torch.full((n,), constant, dtype=torch.float, device=device)
         # If the reward function is not known, we use -inf and inf as bounds.
         else:
-            lower_bounds = torch.full((n,), float('-inf'), device=device)
-            upper_bounds = torch.full((n,), float('inf'), device=device)
+            lower_bounds = torch.full((n,), float('-inf'), dtype=torch.float, device=device)
+            upper_bounds = torch.full((n,), float('inf'), dtype=torch.float, device=device)
         return lower_bounds, upper_bounds
 
 
@@ -315,7 +318,7 @@ class OffPolicyAlgorithm:
                 state_goals = [(transition.current_state, transition.goal_condition) for transition in transitions]
                 all_q_values = self.model.forward(state_goals)
                 selected_q_values = torch.stack([q_values[actions.index(transition.selected_action)] for (q_values, actions), transition in zip(all_q_values, transitions)])
-                rl_losses = self.loss_function(all_q_values, selected_q_values, transitions)
+                rl_losses = self.loss_function(selected_q_values, transitions)
                 lower_bounds, upper_bounds = self.get_bounds(transitions, rl_losses.device)
                 bounds_errors = selected_q_values - selected_q_values.clamp(lower_bounds, upper_bounds).detach()
                 bounds_losses = huber_loss(bounds_errors, torch.zeros_like(bounds_errors), delta=1.0, reduction='none')
