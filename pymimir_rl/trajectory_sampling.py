@@ -79,7 +79,7 @@ class TrajectorySampler(ABC):
         # Create trajectories from contexts.
         trajectories: list[Trajectory] = []
         for context in rollout_contexts:
-            trajectories.append(Trajectory(context.state_sequence, context.action_sequence, context.reward_sequence, context.goal_condition, self.reward_function))
+            trajectories.append(Trajectory(context.state_sequence, context.action_sequence, context.reward_sequence, self.reward_function, context.goal_condition))
         return trajectories
 
 

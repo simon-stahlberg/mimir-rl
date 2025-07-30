@@ -14,7 +14,7 @@ class RewardFunction(ABC):
     ) -> float:
         pass
 
-    def get_value_bounds(self, immediate_reward: float, future_rewards: float) -> tuple[float, float]:
+    def get_value_bounds(self, immediate_reward: float, future_rewards: float, part_of_solution: bool) -> tuple[float, float]:
         return float('-inf'), float('inf')
 
 
@@ -32,8 +32,8 @@ class GoalTransitionRewardFunction(RewardFunction):
     ) -> float:
         return self.constant if goal_condition.holds(successor_state) else 0
 
-    def get_value_bounds(self, immediate_reward: float, future_rewards: float) -> tuple[float, float]:
-        return 0.0, self.constant
+    def get_value_bounds(self, immediate_reward: float, future_rewards: float, part_of_solution: bool) -> tuple[float, float]:
+        return (0.0, self.constant) if part_of_solution else (float('-inf'), float('inf'))
 
 
 class ConstantRewardFunction(RewardFunction):
@@ -50,5 +50,5 @@ class ConstantRewardFunction(RewardFunction):
     ) -> float:
         return self.constant
 
-    def get_value_bounds(self, immediate_reward: float, future_rewards: float) -> tuple[float, float]:
-        return immediate_reward + future_rewards, self.constant
+    def get_value_bounds(self, immediate_reward: float, future_rewards: float, part_of_solution: bool) -> tuple[float, float]:
+        return (immediate_reward + future_rewards, self.constant) if part_of_solution else (float('-inf'), float('inf'))

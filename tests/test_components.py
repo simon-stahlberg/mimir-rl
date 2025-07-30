@@ -71,7 +71,7 @@ def test_dqn_loss():
         successor_state = selected_action.apply(current_state)
         goal_condition = problem.get_goal_condition()
         reward = reward_function(current_state, selected_action, successor_state, goal_condition)
-        transitions.append(Transition(current_state, successor_state, selected_action, reward, 0.0, reward_function, goal_condition))
+        transitions.append(Transition(current_state, successor_state, selected_action, reward, 0.0, reward_function, goal_condition, False))
     losses = loss(transitions)
     assert losses is not None
     assert len(losses) == len(transitions)

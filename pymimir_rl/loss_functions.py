@@ -13,7 +13,7 @@ class LossFunction(ABC):
         upper_bounds: list[float] = []
         for transition in transitions:
             reward_function = transition.reward_function
-            lower_bound, upper_bound = reward_function.get_value_bounds(transition.immediate_reward, transition.future_rewards)
+            lower_bound, upper_bound = reward_function.get_value_bounds(transition.immediate_reward, transition.future_rewards, transition.part_of_solution)
             lower_bounds.append(lower_bound)
             upper_bounds.append(upper_bound)
         lower_bounds_tensor = torch.tensor(lower_bounds, requires_grad=False, dtype=torch.float, device=device)
