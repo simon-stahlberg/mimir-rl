@@ -15,7 +15,7 @@ from .evaluations import (
 )
 
 from .models import (
-    QValueModel
+    ActionScalarModel
 )
 
 from .replay_buffers import (
@@ -85,7 +85,7 @@ __all__ = [
     "PrioritizedReplayBuffer",
     "ProblemSampler",
     "PropositionalHindsightTrajectoryRefiner",
-    "QValueModel",
+    "ActionScalarModel",
     "ReplayBuffer",
     "RewardFunction",
     "SolutionLengthCriteria",

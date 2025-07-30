@@ -1,3 +1,4 @@
+from typing import Callable
 import pymimir as mm
 import pytest
 import torch
@@ -11,7 +12,7 @@ TEST_DIR = Path(__file__).parent
 DATA_DIR = TEST_DIR / 'data'
 
 
-class RGNNWrapper(QValueModel):
+class RGNNWrapper(ActionScalarModel):
     def __init__(self, domain: mm.Domain) -> None:
         super().__init__()  # type: ignore
         config = RelationalGraphNeuralNetworkConfig(
@@ -29,7 +30,6 @@ class RGNNWrapper(QValueModel):
         actions_list: list[list[mm.GroundAction]] = []
         for state, goal in state_goals:
             actions = state.generate_applicable_actions()
-            goal = state.get_problem().get_goal_condition()
             input_list.append((state, actions, goal))
             actions_list.append(actions)
         q_values_list: list[torch.Tensor] = self.rgnn.forward(input_list).readout('q')  # type: ignore
@@ -63,37 +63,37 @@ def test_dqn_loss():
     domain = mm.Domain(domain_path)
     problem = mm.Problem(domain, problem_path)
     model = RGNNWrapper(domain)
-    loss = DQNLossFunction(model, 0.999, 10.0)
+    loss = DQNLossFunction(model, model, 0.999, 10.0, True)
     transitions: list[Transition] = []
     current_state = problem.get_initial_state()
+    reward_function = ConstantRewardFunction(-1.0)
     for selected_action in current_state.generate_applicable_actions():
         successor_state = selected_action.apply(current_state)
         goal_condition = problem.get_goal_condition()
-        transitions.append(Transition(current_state, successor_state, selected_action, -1, 0, goal_condition))
-    state_goals = [(transition.current_state, transition.goal_condition) for transition in transitions]
-    all_q_values = model.forward(state_goals)
-    selected_q_values = torch.stack([q_values[actions.index(transition.selected_action)] for (q_values, actions), transition in zip(all_q_values, transitions)])
-    losses = loss(selected_q_values, transitions)
+        reward = reward_function(current_state, selected_action, successor_state, goal_condition)
+        transitions.append(Transition(current_state, successor_state, selected_action, reward, 0.0, reward_function, goal_condition))
+    losses = loss(transitions)
     assert losses is not None
     assert len(losses) == len(transitions)
 
 
-@pytest.mark.parametrize("domain_name, trajectory_sampler", [
-    ('blocks', PolicyTrajectorySampler()),
-    ('blocks', BoltzmannTrajectorySampler(1.0)),
-    ('blocks', GreedyPolicyTrajectorySampler()),
-    ('gripper', PolicyTrajectorySampler()),
-    ('gripper', BoltzmannTrajectorySampler(1.0)),
-    ('gripper', GreedyPolicyTrajectorySampler()),
+@pytest.mark.parametrize("domain_name, trajectory_sampler_creator", [
+    ('blocks', lambda model, reward_function: PolicyTrajectorySampler(model, reward_function)),
+    ('blocks', lambda model, reward_function: BoltzmannTrajectorySampler(model, reward_function, 1.0)),
+    ('blocks', lambda model, reward_function: GreedyPolicyTrajectorySampler(model, reward_function, )),
+    ('gripper', lambda model, reward_function: PolicyTrajectorySampler(model, reward_function, )),
+    ('gripper', lambda model, reward_function: BoltzmannTrajectorySampler(model, reward_function, 1.0)),
+    ('gripper', lambda model, reward_function: GreedyPolicyTrajectorySampler(model, reward_function, )),
 ])
-def test_trajectory_sampler(domain_name: str, trajectory_sampler: TrajectorySampler):
+def test_trajectory_sampler(domain_name: str, trajectory_sampler_creator: Callable[[ActionScalarModel, RewardFunction], TrajectorySampler]):
     domain_path = DATA_DIR / domain_name / 'domain.pddl'
     problem_path = DATA_DIR / domain_name / 'problem.pddl'
     domain = mm.Domain(domain_path)
     problem = mm.Problem(domain, problem_path)
     model = RGNNWrapper(domain)
     reward_function = GoalTransitionRewardFunction(1)
-    trajectories = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition())], model, reward_function, 10)
+    trajectory_sampler = trajectory_sampler_creator(model, reward_function)
+    trajectories = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition())], 10)
     assert isinstance(trajectories, list)
     assert len(trajectories) == 1
     trajectory = trajectories[0]
@@ -110,10 +110,10 @@ def test_state_hindsight(domain_name: str):
     problem = mm.Problem(domain, problem_path)
     model = RGNNWrapper(domain)
     reward_function = ConstantRewardFunction(-1)
-    trajectory_sampler = PolicyTrajectorySampler()
+    trajectory_sampler = PolicyTrajectorySampler(model, reward_function)
     trajectory_refiner = StateHindsightTrajectoryRefiner(10)
-    original_trajectories = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition())], model, reward_function, 100)
-    refined_trajectories = trajectory_refiner.refine(original_trajectories, reward_function)
+    original_trajectories = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition())], 100)
+    refined_trajectories = trajectory_refiner.refine(original_trajectories)
     assert len(refined_trajectories) < 10
     for refined_trajectory in refined_trajectories:
         assert refined_trajectory.is_solution()
@@ -128,10 +128,10 @@ def test_propositional_hindsight(domain_name: str):
     problem = mm.Problem(domain, problem_path)
     model = RGNNWrapper(domain)
     reward_function = ConstantRewardFunction(-1)
-    trajectory_sampler = PolicyTrajectorySampler()
+    trajectory_sampler = PolicyTrajectorySampler(model, reward_function)
     trajectory_refiner = PropositionalHindsightTrajectoryRefiner([problem], 10)
-    original_trajectories = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition())], model, reward_function, 100)
-    refined_trajectories = trajectory_refiner.refine(original_trajectories, reward_function)
+    original_trajectories = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition())], 100)
+    refined_trajectories = trajectory_refiner.refine(original_trajectories)
     assert len(refined_trajectories) < 10
     for refined_trajectory in refined_trajectories:
         assert refined_trajectory.is_solution()
@@ -146,10 +146,10 @@ def test_lifted_hindsight(domain_name: str):
     problem = mm.Problem(domain, problem_path)
     model = RGNNWrapper(domain)
     reward_function = ConstantRewardFunction(-1)
-    trajectory_sampler = PolicyTrajectorySampler()
+    trajectory_sampler = PolicyTrajectorySampler(model, reward_function)
     trajectory_refiner = LiftedHindsightTrajectoryRefiner([problem], 10)
-    original_trajectories = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition())], model, reward_function, 100)
-    refined_trajectories = trajectory_refiner.refine(original_trajectories, reward_function)
+    original_trajectories = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition())], 100)
+    refined_trajectories = trajectory_refiner.refine(original_trajectories)
     assert len(refined_trajectories) < 10
     for refined_trajectory in refined_trajectories:
         assert refined_trajectory.is_solution()
@@ -167,10 +167,10 @@ def test_off_policy_algorithm(domain_name: str):
     optimizer = torch.optim.Adam(model.parameters())
     lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
     discount_factor = 0.999
-    loss_function = DQNLossFunction(model, discount_factor, 10.0)
+    loss_function = DQNLossFunction(model, model, discount_factor, 10.0)
     reward_function = ConstantRewardFunction(-1)
     replay_buffer = PrioritizedReplayBuffer(100)
-    trajectory_sampler = PolicyTrajectorySampler()
+    trajectory_sampler = PolicyTrajectorySampler(model, reward_function)
     horizon = 100
     rollout_count = 2
     batch_size = 4
@@ -180,7 +180,6 @@ def test_off_policy_algorithm(domain_name: str):
     goal_condition_sampler = OriginalGoalConditionSampler()
     trajectory_refiner = PropositionalHindsightTrajectoryRefiner(problems, 10)
     algorithm = OffPolicyAlgorithm(problems,
-                                   model,
                                    optimizer,
                                    lr_scheduler,
                                    loss_function,
@@ -209,10 +208,10 @@ def test_algorithm_hooks():
     optimizer = torch.optim.Adam(model.parameters())
     lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
     discount_factor = 0.999
-    loss_function = DQNLossFunction(model, discount_factor, 100.0)
+    loss_function = DQNLossFunction(model, model, discount_factor, 100.0)
     reward_function = ConstantRewardFunction(-1)
     replay_buffer = PrioritizedReplayBuffer(100)
-    trajectory_sampler = PolicyTrajectorySampler()
+    trajectory_sampler = PolicyTrajectorySampler(model, reward_function)
     horizon = 10
     rollout_count = 2
     batch_size = 4
@@ -222,7 +221,6 @@ def test_algorithm_hooks():
     goal_condition_sampler = OriginalGoalConditionSampler()
     trajectory_refiner = PropositionalHindsightTrajectoryRefiner(problems, 10)
     algorithm = OffPolicyAlgorithm(problems,
-                                   model,
                                    optimizer,
                                    lr_scheduler,
                                    loss_function,
@@ -256,7 +254,7 @@ def test_algorithm_hooks():
     algorithm.register_post_collect_experience(lambda: post_collect_experience.append(True))
     algorithm.register_pre_optimize_model(lambda: pre_optimize_model.append(True))
     algorithm.register_post_optimize_model(lambda: post_optimize_model.append(True))
-    algorithm.register_train_step(lambda x, t1, t2, t3: train_step.append(True))
+    algorithm.register_train_step(lambda x, l: train_step.append(True))
     algorithm.fit()
     assert len(sample_problems) == 1
     assert len(sample_initial_states) == 1
@@ -276,14 +274,14 @@ def test_evaluation():
     domain = mm.Domain(domain_path)
     problem = mm.Problem(domain, problem_path)
     problems: list[mm.Problem] = [problem]
-    criterias: list[EvaluationCriteria] = [CoverageCriteria(), SolutionLengthCriteria()]
-    trajectory_sampler: TrajectorySampler = GreedyPolicyTrajectorySampler()
+    model: ActionScalarModel = RGNNWrapper(domain)
     reward_function: RewardFunction = ConstantRewardFunction(-1)
+    trajectory_sampler: TrajectorySampler = GreedyPolicyTrajectorySampler(model, reward_function)
+    criterias: list[EvaluationCriteria] = [CoverageCriteria(), SolutionLengthCriteria()]
     horizon: int = 100
-    evaluation = PolicyEvaluation(problems, criterias, trajectory_sampler, reward_function, horizon)
-    model: QValueModel = RGNNWrapper(domain)
-    best1, result1 = evaluation.evaluate(model)
-    best2, result2 = evaluation.evaluate(model)
+    evaluation = PolicyEvaluation(problems, criterias, trajectory_sampler, horizon)
+    best1, result1 = evaluation.evaluate()
+    best2, result2 = evaluation.evaluate()
     assert best1
     assert not best2
     assert result1 == result2

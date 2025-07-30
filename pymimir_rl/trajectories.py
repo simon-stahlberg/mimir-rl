@@ -10,14 +10,16 @@ class Transition:
                  selected_action: mm.GroundAction,
                  reward: float,
                  future_rewards: float,
+                 reward_function: RewardFunction,
                  goal_condition: mm.GroundConjunctiveCondition) -> None:
         assert current_state.get_problem() == successor_state.get_problem(), "Origin and destination states must belong to the same problem."
         self.current_state = current_state
         self.successor_state = successor_state
         self.selected_action = selected_action
-        self.goal_condition = goal_condition
-        self.reward = reward
+        self.immediate_reward = reward
         self.future_rewards = future_rewards
+        self.reward_function = reward_function
+        self.goal_condition = goal_condition
         self.achieves_goal = goal_condition.holds(successor_state)
 
     def __str__(self) -> str:
@@ -29,11 +31,13 @@ class Trajectory:
                  state_sequence: list[mm.State],
                  action_sequence: list[mm.GroundAction],
                  reward_sequence: list[float],
-                 goal_condition: mm.GroundConjunctiveCondition):
+                 goal_condition: mm.GroundConjunctiveCondition,
+                 reward_function: RewardFunction):
         assert len(state_sequence) == len(action_sequence) + 1, "State sequence must have one more element than action sequence."
         assert len(action_sequence) == len(reward_sequence), "State sequence and reward sequence must have the same length."
         assert isinstance(goal_condition, mm.GroundConjunctiveCondition), "Goal condition must be a GroundConjunctiveCondition."
         self.problem = state_sequence[0].get_problem()
+        self.reward_function = reward_function
         self.transitions: list[Transition] = []
         for idx in range(len(action_sequence)):
             current_state = state_sequence[idx]
@@ -41,7 +45,7 @@ class Trajectory:
             selected_action = action_sequence[idx]
             reward = reward_sequence[idx]
             future_rewards = sum(reward_sequence[idx + 1:])
-            transition = Transition(current_state, successor_state, selected_action, reward, future_rewards, goal_condition)
+            transition = Transition(current_state, successor_state, selected_action, reward, future_rewards, reward_function, goal_condition)
             assert (idx >= len(action_sequence) - 1) or (not transition.achieves_goal), "The trajectory must terminate on goal states."
             self.transitions.append(transition)
 
@@ -57,7 +61,7 @@ class Trajectory:
     def is_solution(self) -> bool:
         return self.transitions[-1].achieves_goal
 
-    def clone_with_goal(self, start_index_incl: int, end_index_incl: int, goal_condition: mm.GroundConjunctiveCondition, reward_function: RewardFunction) -> 'Trajectory':
+    def clone_with_goal(self, start_index_incl: int, end_index_incl: int, goal_condition: mm.GroundConjunctiveCondition) -> 'Trajectory':
         assert start_index_incl >= 0 and end_index_incl < len(self.transitions), "Indices must be within the bounds of the trajectory."
         assert start_index_incl <= end_index_incl, "Start index must be less than or equal to end index."
         assert goal_condition.get_problem() == self.problem, "Goal condition must belong to the same problem as the trajectory."
@@ -70,12 +74,12 @@ class Trajectory:
             current_state = transition.current_state
             selected_action = transition.selected_action
             successor_state = transition.successor_state
-            reward = reward_function(current_state, selected_action, successor_state, goal_condition)
+            reward = self.reward_function(current_state, selected_action, successor_state, goal_condition)
             cloned_state_sequence.append(current_state)
             cloned_action_sequence.append(selected_action)
             cloned_reward_sequence.append(reward)
         cloned_state_sequence.append(self.transitions[end_index_incl].successor_state)
-        return Trajectory(cloned_state_sequence, cloned_action_sequence, cloned_reward_sequence, goal_condition)
+        return Trajectory(cloned_state_sequence, cloned_action_sequence, cloned_reward_sequence, goal_condition, self.reward_function)
 
     def validate(self) -> None:
         """
@@ -100,8 +104,8 @@ class Trajectory:
             assert transition.selected_action.apply(transition.current_state) == transition.successor_state
             assert not transition.goal_condition.holds(transition.current_state)
         if len(self.transitions) > 0:
-            expected_rewards = sum(transition.reward for transition in self.transitions)
-            actual_rewards = self.transitions[0].reward + self.transitions[0].future_rewards
+            expected_rewards = sum(transition.immediate_reward for transition in self.transitions)
+            actual_rewards = self.transitions[0].immediate_reward + self.transitions[0].future_rewards
             assert actual_rewards == expected_rewards, "Expected and actual rewards must not differ."
 
 

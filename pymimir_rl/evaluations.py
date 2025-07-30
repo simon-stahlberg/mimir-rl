@@ -2,8 +2,6 @@ import pymimir as mm
 
 from abc import ABC, abstractmethod
 
-from .models import QValueModel
-from .reward_functions import RewardFunction
 from .trajectories import Trajectory
 from .trajectory_sampling import TrajectorySampler
 
@@ -59,16 +57,14 @@ class PolicyEvaluation:
                  problems: list[mm.Problem],
                  criterias: list[EvaluationCriteria],
                  trajectory_sampler: TrajectorySampler,
-                 reward_function: RewardFunction,
                  horizon: int) -> None:
         self.problems = problems
         self.criterias = criterias
         self.trajectory_sampler = trajectory_sampler
-        self.reward_function = reward_function
         self.horizon = horizon
         self.best_evaluation = None
 
-    def evaluate(self, model: QValueModel) -> tuple[bool, list[int]]:
+    def evaluate(self) -> tuple[bool, list[int]]:
         """
         Evaluates the given model on the set of problems using the specified criteria.
 
@@ -81,7 +77,7 @@ class PolicyEvaluation:
                 - A list of evaluation scores for each criterion.
         """
         state_goals = [(problem.get_initial_state(), problem.get_goal_condition()) for problem in self.problems]
-        trajectories = self.trajectory_sampler.sample(state_goals, model, self.reward_function, self.horizon)
+        trajectories = self.trajectory_sampler.sample(state_goals, self.horizon)
         evaluation = [criteria.evaluate(trajectories) for criteria in self.criterias]
         if self.best_evaluation is None:
             self.best_evaluation = evaluation

@@ -1,16 +1,15 @@
 import pymimir as mm
 import torch
 
-from torch.nn.functional import huber_loss
 from typing import Callable
 
 from .goal_condition_sampling import GoalConditionSampler, OriginalGoalConditionSampler
 from .initial_state_sampling import InitialStateSampler, OriginalInitialStateSampler
 from .loss_functions import LossFunction
-from .models import QValueModel
+from .models import ActionScalarModel
 from .problem_sampling import ProblemSampler, UniformProblemSampler
 from .replay_buffers import ReplayBuffer
-from .reward_functions import ConstantRewardFunction, GoalTransitionRewardFunction, RewardFunction
+from .reward_functions import RewardFunction
 from .trajectories import Trajectory, Transition
 from .trajectory_refinements import TrajectoryRefiner, IdentityTrajectoryRefiner
 from .trajectory_sampling import TrajectorySampler
@@ -23,7 +22,6 @@ class OffPolicyAlgorithm:
 
     def __init__(self,
                  problems: list[mm.Problem],
-                 model: QValueModel,
                  optimizer: torch.optim.Optimizer,
                  lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
                  loss_function: LossFunction,
@@ -43,7 +41,6 @@ class OffPolicyAlgorithm:
 
         Args:
             problems (list[mm.Problem]): List of problem instances.
-            model (ModelWrapper): The model to be trained.
             optimizer (torch.optim.Optimizer): Optimizer for model parameters.
             lr_scheduler (torch.optim.lr_scheduler.LRScheduler): Learning rate scheduler for the optimizer.
             loss_function (LossFunction): Function to compute losses.
@@ -61,7 +58,6 @@ class OffPolicyAlgorithm:
         """
         assert isinstance(problems, list) and all(isinstance(problem, mm.Problem) for problem in problems), "Problems must be a list of mm.Problem instances."
         assert len(problems) > 0, "At least one problem must be provided."
-        assert isinstance(model, QValueModel), "Model must be an instance of ModelWrapper."
         assert isinstance(optimizer, torch.optim.Optimizer), "Optimizer must be an instance of torch.optim.Optimizer."
         assert isinstance(lr_scheduler, torch.optim.lr_scheduler.LRScheduler), "LR Scheduler must be an instance of torch.optim.lr_scheduler.LRScheduler."
         assert isinstance(loss_function, LossFunction), "Loss function must be an instance of LossFunction."
@@ -73,7 +69,6 @@ class OffPolicyAlgorithm:
         assert isinstance(train_steps, int), "Train steps must be an integer."
         assert train_steps > 0, "Train steps must be positive."
         self.problems = problems
-        self.model = model
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
         self.loss_function = loss_function
@@ -100,7 +95,7 @@ class OffPolicyAlgorithm:
         self._listeners_refine_trajectories: list[Callable[[list[Trajectory]], None]] = []
         self._listeners_pre_collect_experience: list[Callable[[], None]] = []
         self._listeners_post_collect_experience: list[Callable[[], None]] = []
-        self._listeners_train_step: list[Callable[[list[Transition], torch.Tensor, torch.Tensor, torch.Tensor], None]] = []
+        self._listeners_train_step: list[Callable[[list[Transition], torch.Tensor], None]] = []
         self._listeners_pre_optimize_model: list[Callable[[], None]] = []
         self._listeners_post_optimize_model: list[Callable[[], None]] = []
 
@@ -132,9 +127,9 @@ class OffPolicyAlgorithm:
         for listener in self._listeners_post_collect_experience:
             listener()
 
-    def _notify_train_step(self, transitions: list[Transition], q_values: torch.Tensor, rl_losses: torch.Tensor, bounds_losses: torch.Tensor) -> None:
+    def _notify_train_step(self, transitions: list[Transition], losses: torch.Tensor) -> None:
         for listener in self._listeners_train_step:
-            listener(transitions, q_values, rl_losses, bounds_losses)
+            listener(transitions, losses)
 
     def _notify_pre_optimize_model(self) -> None:
         for listener in self._listeners_pre_optimize_model:
@@ -165,7 +160,7 @@ class OffPolicyAlgorithm:
     def register_post_collect_experience(self, callback: Callable[[], None]) -> None:
         self._listeners_post_collect_experience.append(callback)
 
-    def register_train_step(self, callback: Callable[[list[Transition], torch.Tensor, torch.Tensor, torch.Tensor], None]) -> None:
+    def register_train_step(self, callback: Callable[[list[Transition], torch.Tensor], None]) -> None:
         self._listeners_train_step.append(callback)
 
     def register_pre_optimize_model(self, callback: Callable[[], None]) -> None:
@@ -216,7 +211,7 @@ class OffPolicyAlgorithm:
         self._notify_sample_goal_conditions(result)
         return result
 
-    def sample_trajectories(self, state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]], model: QValueModel, reward_function: RewardFunction) -> list[Trajectory]:
+    def sample_trajectories(self, state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]]) -> list[Trajectory]:
         """
         Sample trajectories from the given problems.
 
@@ -228,22 +223,21 @@ class OffPolicyAlgorithm:
         Returns:
             list[Trajectory]: A list of sampled trajectories.
         """
-        result = self.trajectory_sampler.sample(state_goals, model, reward_function, self.horizon)
+        result = self.trajectory_sampler.sample(state_goals, self.horizon)
         self._notify_sample_trajectories(result)
         return result
 
-    def refine_trajectories(self, trajectories: list[Trajectory], reward_function: RewardFunction) -> list[Trajectory]:
+    def refine_trajectories(self, trajectories: list[Trajectory]) -> list[Trajectory]:
         """
         Refine the sampled trajectories.
 
         Args:
             trajectories (list[Trajectory]): A list of sampled trajectories.
-            reward_function (RewardFunction): A reward function.
 
         Returns:
             list[Trajectory]: A refined list of trajectories.
         """
-        result = self.trajectory_refiner.refine(trajectories, reward_function)
+        result = self.trajectory_refiner.refine(trajectories)
         self._notify_refine_trajectories(result)
         return result
 
@@ -263,44 +257,16 @@ class OffPolicyAlgorithm:
         """
         self._notify_pre_collect_experience()
         with torch.no_grad():
-            self.model.eval()
             problems = self.sample_problems(rollout_size)
             initial_states = self.sample_initial_states(problems)
             goal_conditions = self.sample_goal_conditions(problems)
             state_goals = list(zip(initial_states, goal_conditions))
-            trajectories = self.sample_trajectories(state_goals, self.model, self.reward_function)
-            refined_trajectories = self.refine_trajectories(trajectories, self.reward_function)
+            trajectories = self.sample_trajectories(state_goals)
+            refined_trajectories = self.refine_trajectories(trajectories)
             for refined_trajectory in refined_trajectories:
                 for refined_transition in refined_trajectory:
                     self.replay_buffer.push(refined_transition)
         self._notify_post_collect_experience()
-
-    def get_bounds(self, transitions: list[Transition], device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
-        n = len(transitions)
-        # The bounds for the ConstantRewardFunction correlates with the length of the trajectory it originates from.
-        if isinstance(self.reward_function, ConstantRewardFunction):
-            constant = float(self.reward_function.constant)
-            if constant < 0:
-                lower_bounds = torch.tensor([t.reward + t.future_rewards for t in transitions], dtype=torch.float, device=device)
-                upper_bounds = torch.full((n,), constant, dtype=torch.float, device=device)
-            else:
-                lower_bounds = torch.full((n,), 0.0, dtype=torch.float, device=device)
-                upper_bounds = torch.tensor([t.reward + t.future_rewards for t in transitions], dtype=torch.float, device=device)
-        # The bounds for the GoalTransitionRewardFunction strictly depends on the constant used to initialize it.
-        elif isinstance(self.reward_function, GoalTransitionRewardFunction):
-            constant = float(self.reward_function.constant)
-            if constant < 0:
-                lower_bounds = torch.full((n,), constant, dtype=torch.float, device=device)
-                upper_bounds = torch.full((n,), 0.0, dtype=torch.float, device=device)
-            else:
-                lower_bounds = torch.full((n,), 0.0, dtype=torch.float, device=device)
-                upper_bounds = torch.full((n,), constant, dtype=torch.float, device=device)
-        # If the reward function is not known, we use -inf and inf as bounds.
-        else:
-            lower_bounds = torch.full((n,), float('-inf'), dtype=torch.float, device=device)
-            upper_bounds = torch.full((n,), float('inf'), dtype=torch.float, device=device)
-        return lower_bounds, upper_bounds
-
 
     def optimize_model(self, batch_size: int) -> None:
         """
@@ -311,21 +277,14 @@ class OffPolicyAlgorithm:
         """
         self._notify_pre_optimize_model()
         if len(self.replay_buffer) > 0:
-            self.model.train()
             for _ in range(self.train_steps):
                 transitions, weights, indices = self.replay_buffer.sample(batch_size)
                 self.optimizer.zero_grad()
-                state_goals = [(transition.current_state, transition.goal_condition) for transition in transitions]
-                all_q_values = self.model.forward(state_goals)
-                selected_q_values = torch.stack([q_values[actions.index(transition.selected_action)] for (q_values, actions), transition in zip(all_q_values, transitions)])
-                rl_losses = self.loss_function(selected_q_values, transitions)
-                lower_bounds, upper_bounds = self.get_bounds(transitions, rl_losses.device)
-                bounds_errors = selected_q_values - selected_q_values.clamp(lower_bounds, upper_bounds).detach()
-                bounds_losses = huber_loss(bounds_errors, torch.zeros_like(bounds_errors), delta=1.0, reduction='none')
-                total_loss = (rl_losses * weights).mean() + (bounds_losses * weights).mean()
-                total_loss.backward()  # type: ignore
+                losses = self.loss_function(transitions)
+                loss = (losses * weights).mean()
+                loss.backward()  # type: ignore
                 self.optimizer.step()
-                self.replay_buffer.update(indices, rl_losses.detach().cpu())
-                self._notify_train_step(transitions, selected_q_values.detach(), rl_losses.detach(), bounds_losses.detach())
+                self.replay_buffer.update(indices, losses.detach().cpu())
+                self._notify_train_step(transitions, losses.detach())
             self.lr_scheduler.step()
         self._notify_post_optimize_model()

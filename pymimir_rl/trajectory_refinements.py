@@ -7,7 +7,6 @@ import random
 from abc import ABC, abstractmethod
 from collections import defaultdict
 
-from .reward_functions import RewardFunction
 from .trajectories import Trajectory
 
 
@@ -17,7 +16,7 @@ class TrajectoryRefiner(ABC):
     """
 
     @abstractmethod
-    def refine(self, trajectories: list[Trajectory], reward_function: RewardFunction) -> list[Trajectory]:
+    def refine(self, trajectories: list[Trajectory]) -> list[Trajectory]:
         """
         Refine the sampled trajectories.
 
@@ -36,7 +35,7 @@ class IdentityTrajectoryRefiner(TrajectoryRefiner):
     Does not refine the trajectories.
     """
 
-    def refine(self, trajectories: list[Trajectory], reward_function: RewardFunction) -> list[Trajectory]:
+    def refine(self, trajectories: list[Trajectory]) -> list[Trajectory]:
         return trajectories
 
 
@@ -44,7 +43,7 @@ class StateHindsightTrajectoryRefiner(TrajectoryRefiner):
     def __init__(self, max_generated: int):
         self.max_generated = max_generated
 
-    def refine(self, trajectories: list[Trajectory], reward_function: RewardFunction) -> list[Trajectory]:
+    def refine(self, trajectories: list[Trajectory]) -> list[Trajectory]:
         refined_trajectories: list[Trajectory] = []
         for trajectory in trajectories:
             if len(trajectory) == 0:
@@ -64,7 +63,7 @@ class StateHindsightTrajectoryRefiner(TrajectoryRefiner):
                             break
                         start_index -= 1
                     if (start_index + 1) < end_index:
-                        refined_trajectories.append(trajectory.clone_with_goal(start_index + 1, end_index, goal_condition, reward_function))
+                        refined_trajectories.append(trajectory.clone_with_goal(start_index + 1, end_index, goal_condition))
                     if len(refined_trajectories) >= self.max_generated:
                         return refined_trajectories
                     end_index = start_index - 1
@@ -89,7 +88,7 @@ class PropositionalHindsightTrajectoryRefiner(TrajectoryRefiner):
             subgoals.sort(key=len, reverse=True)
             self.problem_subgoals[problem] = subgoals
 
-    def refine(self, trajectories: list[Trajectory], reward_function: RewardFunction) -> list[Trajectory]:
+    def refine(self, trajectories: list[Trajectory]) -> list[Trajectory]:
         refined_trajectories: list[Trajectory] = []
         for trajectory in trajectories:
             if len(trajectory) == 0:
@@ -110,7 +109,7 @@ class PropositionalHindsightTrajectoryRefiner(TrajectoryRefiner):
                                     break  # Stop when we have found the first "invalid" transition
                                 start_index -= 1
                             if (start_index + 1) < end_index:
-                                refined_trajectories.append(trajectory.clone_with_goal(start_index + 1, end_index, subgoal, reward_function))
+                                refined_trajectories.append(trajectory.clone_with_goal(start_index + 1, end_index, subgoal))
                             end_index = start_index
                             break  # Only extract the largest subgoal per index
                     if len(refined_trajectories) >= self.max_generated:
@@ -189,7 +188,7 @@ class LiftedHindsightTrajectoryRefiner(TrajectoryRefiner):
             subgoals_by_size[len(subgoal)].append(subgoal)  # type: ignore
         return subgoals_by_size  # type: ignore
 
-    def refine(self, trajectories: list[Trajectory], reward_function: RewardFunction) -> list[Trajectory]:
+    def refine(self, trajectories: list[Trajectory]) -> list[Trajectory]:
         refined_trajectories: list[Trajectory] = []
         for trajectory in trajectories:
             assert trajectory.problem in self.problems
@@ -210,7 +209,7 @@ class LiftedHindsightTrajectoryRefiner(TrajectoryRefiner):
                                 break  # Stop when we have found the first "invalid" transition
                             start_index -= 1
                         if (start_index + 1) < end_index:
-                            refined_trajectories.append(trajectory.clone_with_goal(start_index + 1, end_index, grounded_subgoal, reward_function))
+                            refined_trajectories.append(trajectory.clone_with_goal(start_index + 1, end_index, grounded_subgoal))
                         end_index = start_index
                         break  # Only extract the largest subgoal per index
                 if len(refined_trajectories) >= self.max_generated:

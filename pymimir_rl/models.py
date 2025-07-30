@@ -2,7 +2,7 @@ import pymimir as mm
 import torch
 
 
-class QValueModel(torch.nn.Module):
+class ActionScalarModel(torch.nn.Module):
     """
     Abstract base class for model wrappers.
     """

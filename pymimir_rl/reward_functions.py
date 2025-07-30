@@ -14,10 +14,14 @@ class RewardFunction(ABC):
     ) -> float:
         pass
 
+    def get_value_bounds(self, immediate_reward: float, future_rewards: float) -> tuple[float, float]:
+        return float('-inf'), float('inf')
+
 
 class GoalTransitionRewardFunction(RewardFunction):
-    def __init__(self, reward_constant: int = 1) -> None:
-        self.constant = reward_constant
+    def __init__(self, constant: float = 1.0) -> None:
+        assert constant > 0.0, "Constant must be positive."
+        self.constant = constant
 
     def __call__(
         self,
@@ -28,10 +32,14 @@ class GoalTransitionRewardFunction(RewardFunction):
     ) -> float:
         return self.constant if goal_condition.holds(successor_state) else 0
 
+    def get_value_bounds(self, immediate_reward: float, future_rewards: float) -> tuple[float, float]:
+        return 0.0, self.constant
+
 
 class ConstantRewardFunction(RewardFunction):
-    def __init__(self, penalty_constant: int = -1) -> None:
-        self.constant = penalty_constant
+    def __init__(self, constant: float = -1.0) -> None:
+        assert constant < 0.0, "Constant must be negative."
+        self.constant = constant
 
     def __call__(
         self,
@@ -41,3 +49,6 @@ class ConstantRewardFunction(RewardFunction):
         goal_condition: mm.GroundConjunctiveCondition,
     ) -> float:
         return self.constant
+
+    def get_value_bounds(self, immediate_reward: float, future_rewards: float) -> tuple[float, float]:
+        return immediate_reward + future_rewards, self.constant
