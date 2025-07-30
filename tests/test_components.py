@@ -63,7 +63,7 @@ def test_dqn_loss():
     domain = mm.Domain(domain_path)
     problem = mm.Problem(domain, problem_path)
     model = RGNNWrapper(domain)
-    loss = DQNLossFunction(model, model, 0.999, 10.0, True)
+    loss = DQNLossFunction([model, model], [model], 0.999, 10.0, True)
     transitions: list[Transition] = []
     current_state = problem.get_initial_state()
     reward_function = ConstantRewardFunction(-1.0)
