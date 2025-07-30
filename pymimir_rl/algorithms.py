@@ -6,7 +6,6 @@ from typing import Callable
 from .goal_condition_sampling import GoalConditionSampler, OriginalGoalConditionSampler
 from .initial_state_sampling import InitialStateSampler, OriginalInitialStateSampler
 from .loss_functions import LossFunction
-from .models import ActionScalarModel
 from .problem_sampling import ProblemSampler, UniformProblemSampler
 from .replay_buffers import ReplayBuffer
 from .reward_functions import RewardFunction
