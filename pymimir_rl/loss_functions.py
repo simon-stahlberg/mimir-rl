@@ -49,20 +49,25 @@ class DQNLossFunction(LossFunction):
         self.mellowmax_factor = factor
 
     def __call__(self, transitions: list[Transition]) -> torch.Tensor:
+        assert len(self.models) > 0, "Internal error. Field 'models' is empty."
         dead_end_value = -10000
         model_losses: list[torch.Tensor] = []
+        device = next(self.models[0].parameters()).device
+        target_q_values = self._compute_targets(transitions, dead_end_value, device)
         state_goals = [(transition.current_state, transition.goal_condition) for transition in transitions]
+        # Compute bounds, if selected.
+        if self.use_bounds_loss:
+            lower_bounds, upper_bounds = self.get_value_bounds(transitions, device)
+        # Run the forward pass for each model, they share the target Q-values and bounds are only computed once.
         for model in self.models:
             model.train()
             all_q_values = model.forward(state_goals)
             selected_q_values = torch.stack([q_values[actions.index(transition.selected_action)] for (q_values, actions), transition in zip(all_q_values, transitions)])
             # Compute DQN loss.
-            target_q_values = self._compute_targets(transitions, dead_end_value, selected_q_values.device)
             model_losses.append(huber_loss(selected_q_values, target_q_values, delta=1.0, reduction='none'))
             # Compute bounds loss, if selected.
             if self.use_bounds_loss:
-                lower_bounds, upper_bounds = self.get_value_bounds(transitions, selected_q_values.device)
-                bounds_errors = selected_q_values - selected_q_values.clamp(lower_bounds, upper_bounds).detach()
+                bounds_errors = selected_q_values - selected_q_values.clamp(lower_bounds, upper_bounds).detach()  # type: ignore
                 model_losses.append(huber_loss(bounds_errors, torch.zeros_like(bounds_errors), delta=1.0, reduction='none'))
         assert len(model_losses) > 0, "Internal error. Variable 'model_losses' is empty."
         aggregated_losses = model_losses[0]
