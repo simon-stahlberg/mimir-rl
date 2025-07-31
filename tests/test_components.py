@@ -71,7 +71,7 @@ def test_dqn_loss():
         successor_state = selected_action.apply(current_state)
         goal_condition = problem.get_goal_condition()
         reward = reward_function(current_state, selected_action, successor_state, goal_condition)
-        transitions.append(Transition(current_state, successor_state, selected_action, reward, 0.0, reward_function, goal_condition, False))
+        transitions.append(Transition(current_state, successor_state, selected_action, -1.0, reward, 0.0, reward_function, goal_condition, False))
     losses = loss(transitions)
     assert losses is not None
     assert len(losses) == len(transitions)
@@ -277,7 +277,7 @@ def test_evaluation():
     model: ActionScalarModel = RGNNWrapper(domain)
     reward_function: RewardFunction = ConstantRewardFunction(-1)
     trajectory_sampler: TrajectorySampler = GreedyPolicyTrajectorySampler(model, reward_function)
-    criterias: list[EvaluationCriteria] = [CoverageCriteria(), SolutionLengthCriteria()]
+    criterias: list[EvaluationCriteria] = [CoverageCriteria(), LengthCriteria(False), TDErrorCriteria(False)]
     horizon: int = 100
     evaluation = PolicyEvaluation(problems, criterias, trajectory_sampler, horizon)
     best1, result1 = evaluation.evaluate()

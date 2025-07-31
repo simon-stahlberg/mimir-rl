@@ -34,9 +34,34 @@ class CoverageCriteria(EvaluationCriteria):
         return (x > y) - (x < y)
 
 
-class SolutionLengthCriteria(EvaluationCriteria):
+class LengthCriteria(EvaluationCriteria):
+    def __init__(self, only_solutions: bool = True) -> None:
+        super().__init__()
+        self.only_solutions = only_solutions
+
     def evaluate(self, trajectories: list[Trajectory]) -> int:
-        return sum([(len(trajectory) if trajectory.is_solution() else 0) for trajectory in trajectories])
+        return sum([(len(trajectory) if (not self.only_solutions or trajectory.is_solution()) else 0) for trajectory in trajectories])
+
+    def compare(self, x: int, y: int) -> int:
+        return (x < y) - (x > y)
+
+
+class TDErrorCriteria(EvaluationCriteria):
+    def __init__(self, only_solutions: bool = True) -> None:
+        super().__init__()
+        self.only_solutions = only_solutions
+
+    def evaluate(self, trajectories: list[Trajectory]) -> int:
+        total_error = 0.0
+        for trajectory in trajectories:
+            if not self.only_solutions or trajectory.is_solution():
+                for idx in range(len(trajectory) - 1):
+                    curr = trajectory[idx]
+                    succ = trajectory[idx + 1]
+                    q_curr = curr.predicted_q_value
+                    q_succ = succ.predicted_q_value + succ.immediate_reward
+                    total_error += abs(q_curr - q_succ)
+        return round(total_error)
 
     def compare(self, x: int, y: int) -> int:
         return (x < y) - (x > y)

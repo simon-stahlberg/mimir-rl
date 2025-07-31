@@ -23,6 +23,7 @@ class TrajectorySampler(ABC):
         def __init__(self, initial_state: mm.State, goal_condition: mm.GroundConjunctiveCondition) -> None:
             self.state_sequence: list[mm.State] = [initial_state]
             self.action_sequence: list[mm.GroundAction] = []
+            self.q_value_sequence: list[float] = []
             self.reward_sequence: list[float] = []
             self.closed_set: set[mm.State] = set([initial_state])
             self.goal_condition: mm.GroundConjunctiveCondition = goal_condition
@@ -67,11 +68,13 @@ class TrajectorySampler(ABC):
                     action_idx = self.sample_action_index(q_values_copy)
                     action = applicable_actions[action_idx]
                     successor_state = action.apply(current_state)
+                    q_value = q_values[action_idx].item()
                     reward = self.reward_function(current_state, action, successor_state, context.goal_condition)
                     solves = context.goal_condition.holds(successor_state)
                     # Update context.
                     context.state_sequence.append(successor_state)
                     context.action_sequence.append(action)
+                    context.q_value_sequence.append(q_value)
                     context.reward_sequence.append(reward)
                     context.closed_set.add(successor_state)
                     context.solved = solves
@@ -79,7 +82,16 @@ class TrajectorySampler(ABC):
         # Create trajectories from contexts.
         trajectories: list[Trajectory] = []
         for context in rollout_contexts:
-            trajectories.append(Trajectory(context.state_sequence, context.action_sequence, context.reward_sequence, self.reward_function, context.goal_condition))
+            trajectories.append(
+                Trajectory(
+                    context.state_sequence,
+                    context.action_sequence,
+                    context.q_value_sequence,
+                    context.reward_sequence,
+                    self.reward_function,
+                    context.goal_condition,
+                )
+            )
         return trajectories
 
 

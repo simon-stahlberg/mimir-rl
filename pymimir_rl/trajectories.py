@@ -8,6 +8,7 @@ class Transition:
                  current_state: mm.State,
                  successor_state: mm.State,
                  selected_action: mm.GroundAction,
+                 q_value: float,
                  reward: float,
                  future_rewards: float,
                  reward_function: RewardFunction,
@@ -17,6 +18,7 @@ class Transition:
         self.current_state = current_state
         self.successor_state = successor_state
         self.selected_action = selected_action
+        self.predicted_q_value = q_value
         self.immediate_reward = reward
         self.future_rewards = future_rewards
         self.reward_function = reward_function
@@ -32,6 +34,7 @@ class Trajectory:
     def __init__(self,
                  state_sequence: list[mm.State],
                  action_sequence: list[mm.GroundAction],
+                 q_value_sequence: list[float],
                  reward_sequence: list[float],
                  reward_function: RewardFunction,
                  goal_condition: mm.GroundConjunctiveCondition):
@@ -46,9 +49,10 @@ class Trajectory:
             current_state = state_sequence[idx]
             successor_state = state_sequence[idx + 1]
             selected_action = action_sequence[idx]
+            q_value = q_value_sequence[idx]
             reward = reward_sequence[idx]
             future_rewards = sum(reward_sequence[idx + 1:])
-            transition = Transition(current_state, successor_state, selected_action, reward, future_rewards, reward_function, goal_condition, part_of_solution)
+            transition = Transition(current_state, successor_state, selected_action, q_value, reward, future_rewards, reward_function, goal_condition, part_of_solution)
             assert (idx >= len(action_sequence) - 1) or (not transition.achieves_goal), "The trajectory must terminate on goal states."
             self.transitions.append(transition)
 
@@ -71,6 +75,7 @@ class Trajectory:
         assert isinstance(goal_condition, mm.GroundConjunctiveCondition), "Goal condition must be a GroundConjunctiveCondition."
         cloned_state_sequence: list[mm.State] = []
         cloned_action_sequence: list[mm.GroundAction] = []
+        cloned_q_value_sequence: list[float] = []
         cloned_reward_sequence: list[float] = []
         for transition_index in range(start_index_incl, end_index_incl + 1):
             transition = self.transitions[transition_index]
@@ -80,9 +85,10 @@ class Trajectory:
             reward = self.reward_function(current_state, selected_action, successor_state, goal_condition)
             cloned_state_sequence.append(current_state)
             cloned_action_sequence.append(selected_action)
+            cloned_q_value_sequence.append(float("nan"))
             cloned_reward_sequence.append(reward)
         cloned_state_sequence.append(self.transitions[end_index_incl].successor_state)
-        return Trajectory(cloned_state_sequence, cloned_action_sequence, cloned_reward_sequence, self.reward_function, goal_condition)
+        return Trajectory(cloned_state_sequence, cloned_action_sequence, cloned_q_value_sequence, cloned_reward_sequence, self.reward_function, goal_condition)
 
     def validate(self) -> None:
         """

@@ -10,7 +10,8 @@ from .loss_functions import (
 from .evaluations import (
     EvaluationCriteria,
     CoverageCriteria,
-    SolutionLengthCriteria,
+    LengthCriteria,
+    TDErrorCriteria,
     PolicyEvaluation,
 )
 
@@ -65,6 +66,7 @@ from .trajectory_refinements import (
 )
 
 __all__ = [
+    "ActionScalarModel",
     "BoltzmannTrajectorySampler",
     "ConstantRewardFunction",
     "CoverageCriteria",
@@ -85,11 +87,11 @@ __all__ = [
     "PrioritizedReplayBuffer",
     "ProblemSampler",
     "PropositionalHindsightTrajectoryRefiner",
-    "ActionScalarModel",
     "ReplayBuffer",
     "RewardFunction",
-    "SolutionLengthCriteria",
+    "LengthCriteria",
     "StateHindsightTrajectoryRefiner",
+    "TDErrorCriteria",
     "Trajectory",
     "TrajectoryRefiner",
     "TrajectorySampler",
