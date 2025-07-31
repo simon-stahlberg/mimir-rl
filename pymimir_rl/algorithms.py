@@ -280,7 +280,7 @@ class OffPolicyAlgorithm:
                 transitions, weights, indices = self.replay_buffer.sample(batch_size)
                 self.optimizer.zero_grad()
                 losses = self.loss_function(transitions)
-                loss = (losses * weights).mean()
+                loss = (losses * weights.to(losses.device)).mean()
                 loss.backward()  # type: ignore
                 self.optimizer.step()
                 self.replay_buffer.update(indices, losses.detach().cpu())
