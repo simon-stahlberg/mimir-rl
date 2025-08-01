@@ -80,10 +80,12 @@ def test_dqn_loss():
 @pytest.mark.parametrize("domain_name, trajectory_sampler_creator", [
     ('blocks', lambda model, reward_function: PolicyTrajectorySampler(model, reward_function)),
     ('blocks', lambda model, reward_function: BoltzmannTrajectorySampler(model, reward_function, 1.0)),
-    ('blocks', lambda model, reward_function: GreedyPolicyTrajectorySampler(model, reward_function, )),
-    ('gripper', lambda model, reward_function: PolicyTrajectorySampler(model, reward_function, )),
+    ('blocks', lambda model, reward_function: StateBoltzmannTrajectorySampler(model, reward_function, 1.0, 0.1, 10)),
+    ('blocks', lambda model, reward_function: GreedyPolicyTrajectorySampler(model, reward_function)),
+    ('gripper', lambda model, reward_function: PolicyTrajectorySampler(model, reward_function)),
     ('gripper', lambda model, reward_function: BoltzmannTrajectorySampler(model, reward_function, 1.0)),
-    ('gripper', lambda model, reward_function: GreedyPolicyTrajectorySampler(model, reward_function, )),
+    ('gripper', lambda model, reward_function: GreedyPolicyTrajectorySampler(model, reward_function)),
+    ('gripper', lambda model, reward_function: StateBoltzmannTrajectorySampler(model, reward_function, 1.0, 0.1, 10))
 ])
 def test_trajectory_sampler(domain_name: str, trajectory_sampler_creator: Callable[[ActionScalarModel, RewardFunction], TrajectorySampler]):
     domain_path = DATA_DIR / domain_name / 'domain.pddl'

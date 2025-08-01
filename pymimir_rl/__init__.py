@@ -3,16 +3,16 @@ from .algorithms import (
 )
 
 from .loss_functions import (
-    LossFunction,
-    DQNLossFunction
+    DQNLossFunction,
+    LossFunction
 )
 
 from .evaluations import (
-    EvaluationCriteria,
     CoverageCriteria,
+    EvaluationCriteria,
     LengthCriteria,
-    TDErrorCriteria,
     PolicyEvaluation,
+    TDErrorCriteria
 )
 
 from .models import (
@@ -20,14 +20,14 @@ from .models import (
 )
 
 from .replay_buffers import (
-    ReplayBuffer,
-    PrioritizedReplayBuffer
+    PrioritizedReplayBuffer,
+    ReplayBuffer
 )
 
 from .reward_functions import (
-    RewardFunction,
+    ConstantRewardFunction,
     GoalTransitionRewardFunction,
-    ConstantRewardFunction
+    RewardFunction
 )
 
 from .problem_sampling import (
@@ -46,23 +46,24 @@ from .goal_condition_sampling import (
 )
 
 from .trajectory_sampling import (
-    TrajectorySampler,
-    PolicyTrajectorySampler,
     BoltzmannTrajectorySampler,
-    GreedyPolicyTrajectorySampler
+    GreedyPolicyTrajectorySampler,
+    PolicyTrajectorySampler,
+    StateBoltzmannTrajectorySampler,
+    TrajectorySampler
 )
 
 from .trajectories import (
-    Transition,
-    Trajectory
+    Trajectory,
+    Transition
 )
 
 from .trajectory_refinements import (
-    TrajectoryRefiner,
     IdentityTrajectoryRefiner,
     LiftedHindsightTrajectoryRefiner,
     PropositionalHindsightTrajectoryRefiner,
-    StateHindsightTrajectoryRefiner
+    StateHindsightTrajectoryRefiner,
+    TrajectoryRefiner
 )
 
 __all__ = [
@@ -77,6 +78,7 @@ __all__ = [
     "GreedyPolicyTrajectorySampler",
     "IdentityTrajectoryRefiner",
     "InitialStateSampler",
+    "LengthCriteria",
     "LiftedHindsightTrajectoryRefiner",
     "LossFunction",
     "OffPolicyAlgorithm",
@@ -89,7 +91,7 @@ __all__ = [
     "PropositionalHindsightTrajectoryRefiner",
     "ReplayBuffer",
     "RewardFunction",
-    "LengthCriteria",
+    "StateBoltzmannTrajectorySampler",
     "StateHindsightTrajectoryRefiner",
     "TDErrorCriteria",
     "Trajectory",

@@ -2,6 +2,7 @@ import pymimir as mm
 import torch
 
 from abc import ABC, abstractmethod
+from collections import defaultdict
 
 from .models import ActionScalarModel
 from .reward_functions import RewardFunction
@@ -31,7 +32,7 @@ class TrajectorySampler(ABC):
             self.done = self.solved or (len(initial_state.generate_applicable_actions()) == 0)
 
     @abstractmethod
-    def sample_action_index(self, values: torch.Tensor) -> int:
+    def sample_action_index(self, state: mm.State, actions: list[mm.GroundAction], values: torch.Tensor) -> int:
         """
         Sample an action index.
 
@@ -65,7 +66,7 @@ class TrajectorySampler(ABC):
                         if successor_state in context.closed_set:
                             q_values_copy[action_idx] = -1000000.0
                     # Sample an action to apply.
-                    action_idx = self.sample_action_index(q_values_copy)
+                    action_idx = self.sample_action_index(current_state, applicable_actions, q_values_copy)
                     action = applicable_actions[action_idx]
                     successor_state = action.apply(current_state)
                     q_value = q_values[action_idx].item()
@@ -103,7 +104,7 @@ class PolicyTrajectorySampler(TrajectorySampler):
     def __init__(self, model: ActionScalarModel, reward_function: RewardFunction) -> None:
         super().__init__(model, reward_function)
 
-    def sample_action_index(self, values: torch.Tensor) -> int:
+    def sample_action_index(self, state: mm.State, actions: list[mm.GroundAction], values: torch.Tensor) -> int:
         probabilities = values.softmax(0)
         action_index = probabilities.multinomial(num_samples=1)
         return action_index.item()  # type: ignore
@@ -126,11 +127,43 @@ class BoltzmannTrajectorySampler(TrajectorySampler):
     def get_temperature(self) -> float:
         return self.temperature
 
-    def sample_action_index(self, values: torch.Tensor) -> int:
+    def sample_action_index(self, state: mm.State, actions: list[mm.GroundAction], values: torch.Tensor) -> int:
         probabilities = (values / self.temperature).softmax(dim=0)
         action_index = probabilities.multinomial(num_samples=1)
         return action_index.item()  # type: ignore
 
+
+class StateBoltzmannTrajectorySampler(TrajectorySampler):
+    """
+    Samples trajectories based on a Boltzmann distribution, that takes into account state counts.
+    """
+
+    def __init__(self, model: ActionScalarModel, reward_function: RewardFunction, initial_temperature: float, final_temperature: float, temperature_steps: int) -> None:
+        super().__init__(model, reward_function)
+        assert isinstance(initial_temperature, float), "Initial temperature must be a float."
+        assert isinstance(final_temperature, float), "Final temperature must be a float."
+        assert isinstance(temperature_steps, int), "Temperature steps must be an integer."
+        assert initial_temperature > 0.0, "Initial temperature must be positive."
+        assert final_temperature > 0.0, "Final temperature must be positive."
+        assert temperature_steps > 0, "Temperature steps must be positive."
+        self.initial_temperature = initial_temperature
+        self.final_temperature = final_temperature
+        self.temperature_steps = temperature_steps
+        self.counts: defaultdict[mm.State, int] = defaultdict(int)
+
+    def update_counts(self, trajectories: list[Trajectory]) -> None:
+        # We do not count the final state in the state sequence, as no decision was taken in it.
+        for trajectory in trajectories:
+            for transition in trajectory:
+                self.counts[transition.current_state] += 1
+
+    def sample_action_index(self, state: mm.State, actions: list[mm.GroundAction], values: torch.Tensor) -> int:
+        state_counts = self.counts[state]
+        ratio = min(1.0, state_counts / self.temperature_steps)
+        temperature = self.initial_temperature * (1.0 - ratio) + self.final_temperature * ratio
+        probabilities = (values / temperature).softmax(dim=0)
+        action_index = probabilities.multinomial(num_samples=1)
+        return action_index.item()  # type: ignore
 
 class GreedyPolicyTrajectorySampler(TrajectorySampler):
     """
@@ -140,6 +173,6 @@ class GreedyPolicyTrajectorySampler(TrajectorySampler):
     def __init__(self, model: ActionScalarModel, reward_function: RewardFunction) -> None:
         super().__init__(model, reward_function)
 
-    def sample_action_index(self, values: torch.Tensor) -> int:
+    def sample_action_index(self, state: mm.State, actions: list[mm.GroundAction], values: torch.Tensor) -> int:
         action_index = values.argmax().item()
         return action_index  # type: ignore
