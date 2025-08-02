@@ -38,6 +38,7 @@ from .problem_sampling import (
 from .initial_state_sampling import (
     InitialStateSampler,
     OriginalInitialStateSampler,
+    TopValueInitialStateSampler
 )
 
 from .goal_condition_sampling import (
@@ -47,6 +48,7 @@ from .goal_condition_sampling import (
 
 from .trajectory_sampling import (
     BoltzmannTrajectorySampler,
+    EpsilonGreedyTrajectorySampler,
     GreedyPolicyTrajectorySampler,
     PolicyTrajectorySampler,
     StateBoltzmannTrajectorySampler,
@@ -72,6 +74,7 @@ __all__ = [
     "ConstantRewardFunction",
     "CoverageCriteria",
     "DQNLossFunction",
+    "EpsilonGreedyTrajectorySampler",
     "EvaluationCriteria",
     "GoalConditionSampler",
     "GoalTransitionRewardFunction",
@@ -99,4 +102,5 @@ __all__ = [
     "TrajectorySampler",
     "Transition",
     "UniformProblemSampler",
+    "TopValueInitialStateSampler",
 ]

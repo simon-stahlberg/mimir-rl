@@ -71,7 +71,7 @@ def test_dqn_loss():
         successor_state = selected_action.apply(current_state)
         goal_condition = problem.get_goal_condition()
         reward = reward_function(current_state, selected_action, successor_state, goal_condition)
-        transitions.append(Transition(current_state, successor_state, selected_action, -1.0, reward, 0.0, reward_function, goal_condition, False))
+        transitions.append(Transition(current_state, successor_state, selected_action, -1.0, -1.0, reward, 0.0, reward_function, goal_condition, False))
     losses = loss(transitions)
     assert losses is not None
     assert len(losses) == len(transitions)
@@ -82,10 +82,12 @@ def test_dqn_loss():
     ('blocks', lambda model, reward_function: BoltzmannTrajectorySampler(model, reward_function, 1.0)),
     ('blocks', lambda model, reward_function: StateBoltzmannTrajectorySampler(model, reward_function, 1.0, 0.1, 10)),
     ('blocks', lambda model, reward_function: GreedyPolicyTrajectorySampler(model, reward_function)),
+    ('blocks', lambda model, reward_function: EpsilonGreedyTrajectorySampler(model, reward_function, 0.5)),
     ('gripper', lambda model, reward_function: PolicyTrajectorySampler(model, reward_function)),
     ('gripper', lambda model, reward_function: BoltzmannTrajectorySampler(model, reward_function, 1.0)),
     ('gripper', lambda model, reward_function: GreedyPolicyTrajectorySampler(model, reward_function)),
-    ('gripper', lambda model, reward_function: StateBoltzmannTrajectorySampler(model, reward_function, 1.0, 0.1, 10))
+    ('gripper', lambda model, reward_function: StateBoltzmannTrajectorySampler(model, reward_function, 1.0, 0.1, 10)),
+    ('gripper', lambda model, reward_function: EpsilonGreedyTrajectorySampler(model, reward_function, 0.5))
 ])
 def test_trajectory_sampler(domain_name: str, trajectory_sampler_creator: Callable[[ActionScalarModel, RewardFunction], TrajectorySampler]):
     domain_path = DATA_DIR / domain_name / 'domain.pddl'
@@ -268,6 +270,30 @@ def test_algorithm_hooks():
     assert len(pre_optimize_model) == 1
     assert len(post_optimize_model) == 1
     assert len(train_step) == train_steps
+
+
+def test_value_based_initial_state_sampler():
+    domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
+    problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    problems: list[mm.Problem] = [problem]
+    model: ActionScalarModel = RGNNWrapper(domain)
+    reward_function: RewardFunction = ConstantRewardFunction(-1)
+    initial_state_sampler = TopValueInitialStateSampler(problems, model, reward_function, 0.1, 10)
+    # First, test without any additional states to the pool of initial states.
+    # We expect to get the original initial state.
+    sampled_initial_states_1 = initial_state_sampler.sample(problems)
+    assert len(sampled_initial_states_1) == len(problems)
+    assert all(sampled_initial_states_1[idx] == problem.get_initial_state() for idx, problem in enumerate(problems))
+    # Second, test adding a bunch of states.
+    trajectory_sampler: TrajectorySampler = BoltzmannTrajectorySampler(model, reward_function, 1.0)
+    sampled_trajectory = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition()) for problem in problems], 100)
+    for trajectory in sampled_trajectory:
+        for transition in trajectory:
+            initial_state_sampler.add_state(transition.current_state, transition.predicted_value)
+    sampled_initial_states_2 = initial_state_sampler.sample(problems)
+    assert len(sampled_initial_states_2) == len(problems)
 
 
 def test_evaluation():

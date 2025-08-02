@@ -24,6 +24,7 @@ class TrajectorySampler(ABC):
         def __init__(self, initial_state: mm.State, goal_condition: mm.GroundConjunctiveCondition) -> None:
             self.state_sequence: list[mm.State] = [initial_state]
             self.action_sequence: list[mm.GroundAction] = []
+            self.value_sequence: list[float] = []
             self.q_value_sequence: list[float] = []
             self.reward_sequence: list[float] = []
             self.closed_set: set[mm.State] = set([initial_state])
@@ -57,12 +58,14 @@ class TrajectorySampler(ABC):
                 q_values_batch = self.model.forward(state_goals)
                 for rollout_idx, (q_values, applicable_actions) in zip(context_indices, q_values_batch):
                     context = rollout_contexts[rollout_idx]
+                    rewards: list[float] = []
                     q_values = q_values.cpu()  # Move the result to CPU, the remaining operations are very cheap.
                     q_values_copy = q_values.clone()
                     current_state = context.state_sequence[-1]
                     # Reduce the value actions leading to already visited states.
                     for action_idx, action in enumerate(applicable_actions):
                         successor_state = action.apply(current_state)
+                        rewards.append(self.reward_function(current_state, action, successor_state, context.goal_condition))
                         if successor_state in context.closed_set:
                             q_values_copy[action_idx] = -1000000.0
                     # Sample an action to apply.
@@ -70,11 +73,13 @@ class TrajectorySampler(ABC):
                     action = applicable_actions[action_idx]
                     successor_state = action.apply(current_state)
                     q_value = q_values[action_idx].item()
-                    reward = self.reward_function(current_state, action, successor_state, context.goal_condition)
+                    reward = rewards[action_idx]
+                    value = (q_values + torch.tensor(rewards, dtype=torch.float, device=q_values.device)).max().item()
                     solves = context.goal_condition.holds(successor_state)
                     # Update context.
                     context.state_sequence.append(successor_state)
                     context.action_sequence.append(action)
+                    context.value_sequence.append(value)
                     context.q_value_sequence.append(q_value)
                     context.reward_sequence.append(reward)
                     context.closed_set.add(successor_state)
@@ -87,6 +92,7 @@ class TrajectorySampler(ABC):
                 Trajectory(
                     context.state_sequence,
                     context.action_sequence,
+                    context.value_sequence,
                     context.q_value_sequence,
                     context.reward_sequence,
                     self.reward_function,
@@ -108,6 +114,31 @@ class PolicyTrajectorySampler(TrajectorySampler):
         probabilities = values.softmax(0)
         action_index = probabilities.multinomial(num_samples=1)
         return action_index.item()  # type: ignore
+
+
+class EpsilonGreedyTrajectorySampler(TrajectorySampler):
+    """
+    Samples trajectories according to epsilon-greedy.
+    """
+
+    def __init__(self, model: ActionScalarModel, reward_function: RewardFunction, epsilon: float) -> None:
+        assert isinstance(epsilon, float), "Epsilon must be a float."
+        assert epsilon >= 0.0, "Epsilon must be a probability."
+        assert epsilon <= 1.0, "Epsilon must be a probability."
+        super().__init__(model, reward_function)
+        self.epsilon = epsilon
+
+    def set_epsilon(self, epsilon: float) -> None:
+        self.epsilon = epsilon
+
+    def get_epsilon(self) -> float:
+        return self.epsilon
+
+    def sample_action_index(self, state: mm.State, actions: list[mm.GroundAction], values: torch.Tensor) -> int:
+        if torch.rand(1).item() < self.epsilon:
+            return torch.randint(0, values.numel(), (1,)).item()  # type: ignore
+        else:
+            return torch.argmax(values).item()  # type: ignore
 
 
 class BoltzmannTrajectorySampler(TrajectorySampler):
@@ -162,8 +193,8 @@ class StateBoltzmannTrajectorySampler(TrajectorySampler):
         ratio = min(1.0, state_counts / self.temperature_steps)
         temperature = self.initial_temperature * (1.0 - ratio) + self.final_temperature * ratio
         probabilities = (values / temperature).softmax(dim=0)
-        action_index = probabilities.multinomial(num_samples=1)
-        return action_index.item()  # type: ignore
+        action_idx = probabilities.multinomial(num_samples=1)
+        return action_idx.item()  # type: ignore
 
 class GreedyPolicyTrajectorySampler(TrajectorySampler):
     """

@@ -170,7 +170,7 @@ class OffPolicyAlgorithm:
 
     def sample_problems(self, n: int) -> list[mm.Problem]:
         """
-        Sample problems for the strategy.
+        Sample problems.
 
         Args:
             n (int): The number of problems to sample.
@@ -184,13 +184,13 @@ class OffPolicyAlgorithm:
 
     def sample_initial_states(self, problems: list[mm.Problem]) -> list[mm.State]:
         """
-        Sample an initial state for the strategy.
+        Sample initial states for the problems.
 
         Args:
-            problem (mm.Problem): The problem instance to sample the initial state from.
+            problems (list[mm.Problem]): A list of problem instances.
 
         Returns:
-            mm.State: An initial state.
+            list[mm.State]: A list of sampled initial states.
         """
         result = self.initial_state_sampler.sample(problems)
         self._notify_sample_initial_states(result)
@@ -198,7 +198,7 @@ class OffPolicyAlgorithm:
 
     def sample_goal_conditions(self, problems: list[mm.Problem]) -> list[mm.GroundConjunctiveCondition]:
         """
-        Sample goal conditions for the strategy.
+        Sample goal conditions.
 
         Args:
             problems (list[mm.Problem]): A list of problem instances to sample goal conditions from.
