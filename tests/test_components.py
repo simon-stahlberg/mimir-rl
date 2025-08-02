@@ -277,10 +277,10 @@ def test_value_based_initial_state_sampler():
     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
     domain = mm.Domain(domain_path)
     problem = mm.Problem(domain, problem_path)
-    problems: list[mm.Problem] = [problem]
+    problems: list[mm.Problem] = [problem] * 100
     model: ActionScalarModel = RGNNWrapper(domain)
     reward_function: RewardFunction = ConstantRewardFunction(-1)
-    initial_state_sampler = TopValueInitialStateSampler(problems, model, reward_function, 0.1, 10)
+    initial_state_sampler = TopValueInitialStateSampler(problems, model, reward_function, 0.5, 0.1, 10)
     # First, test without any additional states to the pool of initial states.
     # We expect to get the original initial state.
     sampled_initial_states_1 = initial_state_sampler.sample(problems)
