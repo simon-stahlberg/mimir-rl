@@ -5,7 +5,7 @@ from typing import Callable
 
 from .goal_condition_sampling import GoalConditionSampler, OriginalGoalConditionSampler
 from .initial_state_sampling import InitialStateSampler, OriginalInitialStateSampler
-from .loss_functions import LossFunction
+from .loss_functions import OptimizationFunction
 from .problem_sampling import ProblemSampler, UniformProblemSampler
 from .replay_buffers import ReplayBuffer
 from .reward_functions import RewardFunction
@@ -21,9 +21,7 @@ class OffPolicyAlgorithm:
 
     def __init__(self,
                  problems: list[mm.Problem],
-                 optimizer: torch.optim.Optimizer,
-                 lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
-                 loss_function: LossFunction,
+                 loss_function: OptimizationFunction,
                  reward_function: RewardFunction,
                  replay_buffer: ReplayBuffer,
                  trajectory_sampler: TrajectorySampler,
@@ -40,8 +38,6 @@ class OffPolicyAlgorithm:
 
         Args:
             problems (list[mm.Problem]): List of problem instances.
-            optimizer (torch.optim.Optimizer): Optimizer for model parameters.
-            lr_scheduler (torch.optim.lr_scheduler.LRScheduler): Learning rate scheduler for the optimizer.
             loss_function (LossFunction): Function to compute losses.
             reward_function (RewardFunction): Function to compute rewards.
             replay_buffer (ReplayBuffer): Buffer to store experience transitions.
@@ -57,9 +53,7 @@ class OffPolicyAlgorithm:
         """
         assert isinstance(problems, list) and all(isinstance(problem, mm.Problem) for problem in problems), "Problems must be a list of mm.Problem instances."
         assert len(problems) > 0, "At least one problem must be provided."
-        assert isinstance(optimizer, torch.optim.Optimizer), "Optimizer must be an instance of torch.optim.Optimizer."
-        assert isinstance(lr_scheduler, torch.optim.lr_scheduler.LRScheduler), "LR Scheduler must be an instance of torch.optim.lr_scheduler.LRScheduler."
-        assert isinstance(loss_function, LossFunction), "Loss function must be an instance of LossFunction."
+        assert isinstance(loss_function, OptimizationFunction), "Loss function must be an instance of LossFunction."
         assert isinstance(reward_function, RewardFunction), "Reward function must be an instance of RewardFunction."
         assert isinstance(replay_buffer, ReplayBuffer), "Replay buffer must be an instance of RewardBuffer."
         assert isinstance(trajectory_sampler, TrajectorySampler), "Trajectory sampler must be an instance of TrajectorySampler."
@@ -68,8 +62,6 @@ class OffPolicyAlgorithm:
         assert isinstance(train_steps, int), "Train steps must be an integer."
         assert train_steps > 0, "Train steps must be positive."
         self.problems = problems
-        self.optimizer = optimizer
-        self.lr_scheduler = lr_scheduler
         self.loss_function = loss_function
         self.reward_function = reward_function
         self.replay_buffer = replay_buffer
@@ -278,12 +270,7 @@ class OffPolicyAlgorithm:
         if len(self.replay_buffer) > 0:
             for _ in range(self.train_steps):
                 transitions, weights, indices = self.replay_buffer.sample(batch_size)
-                self.optimizer.zero_grad()
-                losses = self.loss_function(transitions)
-                loss = (losses * weights.to(losses.device)).mean()
-                loss.backward()  # type: ignore
-                self.optimizer.step()
+                losses = self.loss_function(transitions, weights)
                 self.replay_buffer.update(indices, losses.detach().cpu())
                 self._notify_train_step(transitions, losses.detach())
-            self.lr_scheduler.step()
         self._notify_post_optimize_model()

@@ -63,7 +63,9 @@ def test_dqn_loss():
     domain = mm.Domain(domain_path)
     problem = mm.Problem(domain, problem_path)
     model = RGNNWrapper(domain)
-    loss = DQNLossFunction([model, model], [model], 0.999, 10.0, True)
+    optimizer = torch.optim.Adam(model.parameters())
+    lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
+    loss = DQNOptimization(model, optimizer, lr_scheduler, model, 0.999, 10.0, True)
     transitions: list[Transition] = []
     current_state = problem.get_initial_state()
     reward_function = ConstantRewardFunction(-1.0)
@@ -72,7 +74,55 @@ def test_dqn_loss():
         goal_condition = problem.get_goal_condition()
         reward = reward_function(current_state, selected_action, successor_state, goal_condition)
         transitions.append(Transition(current_state, successor_state, selected_action, -1.0, -1.0, reward, 0.0, reward_function, goal_condition, False))
-    losses = loss(transitions)
+    losses = loss(transitions, torch.ones(len(transitions)))
+    assert losses is not None
+    assert len(losses) == len(transitions)
+
+
+def test_sac_loss():
+    domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
+    problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    policy_model = RGNNWrapper(domain)
+    qvalue_model_1 = RGNNWrapper(domain)
+    qvalue_model_2 = RGNNWrapper(domain)
+    qvalue_target_1 = RGNNWrapper(domain)
+    qvalue_target_2 = RGNNWrapper(domain)
+    policy_optimizer = torch.optim.Adam(policy_model.parameters())
+    qvalue_optimizer_1 = torch.optim.Adam(qvalue_model_1.parameters())
+    qvalue_optimizer_2 = torch.optim.Adam(qvalue_model_2.parameters())
+    policy_lr_scheduler = torch.optim.lr_scheduler.StepLR(policy_optimizer, step_size=10, gamma=0.9)
+    qvalue_lr_scheduler_1 = torch.optim.lr_scheduler.StepLR(qvalue_optimizer_1, step_size=10, gamma=0.9)
+    qvalue_lr_scheduler_2 = torch.optim.lr_scheduler.StepLR(qvalue_optimizer_2, step_size=10, gamma=0.9)
+    discount_factor = 0.999
+    polyak_factor = 0.005
+    entropy_temperature = 1.0
+    entropy_lr = 0.0003
+    loss = DiscreteSoftActorCriticOptimization(policy_model,
+                                               policy_optimizer,
+                                               policy_lr_scheduler,
+                                               qvalue_target_1,
+                                               qvalue_model_1,
+                                               qvalue_optimizer_1,
+                                               qvalue_lr_scheduler_1,
+                                               qvalue_target_2,
+                                               qvalue_model_2,
+                                               qvalue_optimizer_2,
+                                               qvalue_lr_scheduler_2,
+                                               discount_factor,
+                                               polyak_factor,
+                                               entropy_temperature,
+                                               entropy_lr)
+    transitions: list[Transition] = []
+    current_state = problem.get_initial_state()
+    reward_function = ConstantRewardFunction(-1.0)
+    for selected_action in current_state.generate_applicable_actions():
+        successor_state = selected_action.apply(current_state)
+        goal_condition = problem.get_goal_condition()
+        reward = reward_function(current_state, selected_action, successor_state, goal_condition)
+        transitions.append(Transition(current_state, successor_state, selected_action, -1.0, -1.0, reward, 0.0, reward_function, goal_condition, False))
+    losses = loss(transitions, torch.ones(len(transitions)))
     assert losses is not None
     assert len(losses) == len(transitions)
 
@@ -171,7 +221,7 @@ def test_off_policy_algorithm(domain_name: str):
     optimizer = torch.optim.Adam(model.parameters())
     lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
     discount_factor = 0.999
-    loss_function = DQNLossFunction(model, model, discount_factor, 10.0)
+    loss_function = DQNOptimization(model, optimizer, lr_scheduler, model, discount_factor, 10.0)
     reward_function = ConstantRewardFunction(-1)
     replay_buffer = PrioritizedReplayBuffer(100)
     trajectory_sampler = PolicyTrajectorySampler(model, reward_function)
@@ -184,8 +234,6 @@ def test_off_policy_algorithm(domain_name: str):
     goal_condition_sampler = OriginalGoalConditionSampler()
     trajectory_refiner = PropositionalHindsightTrajectoryRefiner(problems, 10)
     algorithm = OffPolicyAlgorithm(problems,
-                                   optimizer,
-                                   lr_scheduler,
                                    loss_function,
                                    reward_function,
                                    replay_buffer,
@@ -212,7 +260,7 @@ def test_algorithm_hooks():
     optimizer = torch.optim.Adam(model.parameters())
     lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
     discount_factor = 0.999
-    loss_function = DQNLossFunction(model, model, discount_factor, 100.0)
+    loss_function = DQNOptimization(model, optimizer, lr_scheduler, model, discount_factor, 100.0)
     reward_function = ConstantRewardFunction(-1)
     replay_buffer = PrioritizedReplayBuffer(100)
     trajectory_sampler = PolicyTrajectorySampler(model, reward_function)
@@ -225,8 +273,6 @@ def test_algorithm_hooks():
     goal_condition_sampler = OriginalGoalConditionSampler()
     trajectory_refiner = PropositionalHindsightTrajectoryRefiner(problems, 10)
     algorithm = OffPolicyAlgorithm(problems,
-                                   optimizer,
-                                   lr_scheduler,
                                    loss_function,
                                    reward_function,
                                    replay_buffer,

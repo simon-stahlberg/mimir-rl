@@ -3,8 +3,9 @@ from .algorithms import (
 )
 
 from .loss_functions import (
-    DQNLossFunction,
-    LossFunction
+    DiscreteSoftActorCriticOptimization,
+    DQNOptimization,
+    OptimizationFunction
 )
 
 from .evaluations import (
@@ -73,7 +74,8 @@ __all__ = [
     "BoltzmannTrajectorySampler",
     "ConstantRewardFunction",
     "CoverageCriteria",
-    "DQNLossFunction",
+    "DiscreteSoftActorCriticOptimization",
+    "DQNOptimization",
     "EpsilonGreedyTrajectorySampler",
     "EvaluationCriteria",
     "GoalConditionSampler",
@@ -83,8 +85,8 @@ __all__ = [
     "InitialStateSampler",
     "LengthCriteria",
     "LiftedHindsightTrajectoryRefiner",
-    "LossFunction",
     "OffPolicyAlgorithm",
+    "OptimizationFunction",
     "OriginalGoalConditionSampler",
     "OriginalInitialStateSampler",
     "PolicyEvaluation",
@@ -97,10 +99,10 @@ __all__ = [
     "StateBoltzmannTrajectorySampler",
     "StateHindsightTrajectoryRefiner",
     "TDErrorCriteria",
+    "TopValueInitialStateSampler",
     "Trajectory",
     "TrajectoryRefiner",
     "TrajectorySampler",
     "Transition",
     "UniformProblemSampler",
-    "TopValueInitialStateSampler",
 ]
