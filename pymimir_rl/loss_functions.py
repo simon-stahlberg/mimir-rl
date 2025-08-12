@@ -187,7 +187,7 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
                  qvalue_lr_scheduler_2: torch.optim.lr_scheduler.LRScheduler,
                  discount_factor: float,
                  polyak_factor: float = 0.005,
-                 entropy_temperature: float = 1.0,
+                 entropy_target_scale: float = 1.0,
                  entropy_lr: float = 0.0003) -> None:
         """
         Initializes the DiscreteSoftActorCriticOptimization class.
@@ -206,7 +206,7 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
             qvalue_lr_scheduler_2 (torch.optim.lr_scheduler.LRScheduler): The learning rate scheduler for the second Q-value optimizer.
             discount_factor (float): The discount factor for future rewards. Must be in the range (0, 1].
             polyak_factor (float): The rate at which the target models are updated. Must be in the range (0, 1]. Defaults to 0.005.
-            entropy_temperature (float): The initial entropy value. Must be in the range (0, 1]. Defaults to 1.0.
+            entropy_target_scale (float): The initial entropy value. Must be in the range [0, 1]. Defaults to 1.0.
             entropy_lr (float): The learning rate for the entropy temperature. Must be positive. Defaults to 0.0003.
 
         Raises:
@@ -226,13 +226,14 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
         assert isinstance(qvalue_lr_scheduler_2, torch.optim.lr_scheduler.LRScheduler), "Second Q-value LR scheduler must be an instance of torch.optim.lr_scheduler.LRScheduler."
         assert isinstance(discount_factor, float), "Discount factor must be a float."
         assert isinstance(polyak_factor, float), "Polyak factor must be a float."
-        assert isinstance(entropy_temperature, float), "The initial entropy must be a float."
+        assert isinstance(entropy_target_scale, float), "The initial entropy must be a float."
         assert isinstance(entropy_lr, float), "Learning rate for the entropy must be a float."
         assert discount_factor > 0.0, "Discount factor must be greater than 0.0."
         assert discount_factor <= 1.0, "Discount factor must be less than or equal to 1.0."
         assert polyak_factor > 0.0, "Polyak factor must be greater than 0.0."
         assert polyak_factor <= 1.0, "Polyak factor must be less than or equal to 1.0."
-        assert entropy_temperature > 0.0, "Entropy factor must be greater than 0.0."
+        assert entropy_target_scale >= 0.0, "Entropy factor must be greater than or equal to 0.0."
+        assert entropy_target_scale <= 0.0, "Entropy factor must be less than or equal to 1.0."
         assert entropy_lr > 0.0, "Learning rate for policy must be greater than 0.0."
         self.policy_model = policy_model
         self.policy_optimizer = policy_optimizer
@@ -248,17 +249,18 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
         self.discount_factor = discount_factor
         self.polyak_factor = polyak_factor
         device = next(self.policy_model.parameters()).device
-        # self.entropy_temperature = entropy_temperature
+        self.entropy_target_scale = entropy_target_scale
         self.log_entropy_alpha = torch.nn.Parameter(torch.tensor(0.0, device=device), requires_grad=True)
         self.entropy_optimizer = torch.optim.Adam([self.log_entropy_alpha], lr=entropy_lr)
         self._update_target_critics(1.0)  # Ensure that target models are initialized correctly.
 
-    # def get_entropy_temperature(self) -> float:
-    #     return self.entropy_temperature
+    def get_entropy_target_scale(self) -> float:
+        return self.entropy_temperature
 
-    # def set_entropy_temperature(self, entropy_temperature: float):
-    #     assert entropy_temperature > 0.0, "Entropy fraction must be greater than 0.0."
-    #     self.entropy_temperature = entropy_temperature
+    def set_entropy_target_scale(self, scale: float):
+        assert scale >= 0.0, "Entropy factor must be greater than or equal to 0.0."
+        assert scale <= 0.0, "Entropy factor must be less than or equal to 1.0."
+        self.entropy_temperature = scale
 
     def _compute_qvalue_targets(self, transitions: list[Transition]) -> torch.Tensor:
         with torch.no_grad():
@@ -312,9 +314,9 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
         batch_losses: list[torch.Tensor] = []
         for logits, _ in batch_policy_logits:
             entropy_policy = -(logits.softmax(dim=-1) * logits.log_softmax(dim=-1)).sum(0).detach()
-            entropy_target = -math.log(logits.numel())  # TODO: I think this should be negative.
+            entropy_target = self.entropy_target_scale * math.log(logits.numel())
             entropy_alpha = self.log_entropy_alpha.exp()
-            entropy_loss = -entropy_alpha * (entropy_policy + entropy_target)  # TODO: It might be possible to avoid the .exp(), and optimize directly on the log.
+            entropy_loss = -entropy_alpha * (entropy_policy - entropy_target)
             batch_losses.append(entropy_loss)
         entropy_losses = torch.stack(batch_losses)
         return entropy_losses
