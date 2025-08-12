@@ -13,6 +13,7 @@ from .evaluations import (
     EvaluationCriteria,
     LengthCriteria,
     PolicyEvaluation,
+    ProbabilityCriteria,
     TDErrorCriteria
 )
 
@@ -92,6 +93,7 @@ __all__ = [
     "PolicyEvaluation",
     "PolicyTrajectorySampler",
     "PrioritizedReplayBuffer",
+    "ProbabilityCriteria",
     "ProblemSampler",
     "PropositionalHindsightTrajectoryRefiner",
     "ReplayBuffer",

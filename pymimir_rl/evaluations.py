@@ -1,3 +1,4 @@
+import math
 import pymimir as mm
 
 from abc import ABC, abstractmethod
@@ -61,6 +62,28 @@ class TDErrorCriteria(EvaluationCriteria):
                     q_curr = curr.predicted_q_value
                     q_succ = succ.predicted_q_value + succ.immediate_reward
                     total_error += abs(q_curr - q_succ)
+        return round(total_error)
+
+    def compare(self, x: int, y: int) -> int:
+        return (x < y) - (x > y)
+
+
+class ProbabilityCriteria(EvaluationCriteria):
+    def __init__(self, only_solutions: bool = True) -> None:
+        super().__init__()
+        self.only_solutions = only_solutions
+
+    @staticmethod
+    def _sigmoid(x: float) -> float:
+        return 1.0 / (1.0 + math.exp(-x))
+
+    def evaluate(self, trajectories: list[Trajectory]) -> int:
+        total_error = 0.0
+        for trajectory in trajectories:
+            if not self.only_solutions or trajectory.is_solution():
+                for transition in trajectory:
+                    # If the logit is negative, then the transition is undesirable and results in some error.
+                    total_error += 1.0 - self._sigmoid(transition.predicted_q_value)
         return round(total_error)
 
     def compare(self, x: int, y: int) -> int:
