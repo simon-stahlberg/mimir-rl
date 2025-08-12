@@ -251,7 +251,7 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
         self.entropy_temperature = entropy_temperature
         self.log_entropy_fraction = torch.nn.Parameter(torch.tensor(0.0, device=device), requires_grad=True)
         self.entropy_optimizer = torch.optim.Adam([self.log_entropy_fraction], lr=entropy_lr)
-        self._update_target_models(1.0)  # Ensure that target models are initialized correctly.
+        self._update_target_critics(1.0)  # Ensure that target models are initialized correctly.
 
     def get_entropy_temperature(self) -> float:
         return self.entropy_temperature
@@ -283,34 +283,21 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
             discounted_targets = immediate_rewards + (1.0 - achieves_goal) * self.discount_factor * torch.stack(target_qvalues)
             return discounted_targets
 
-    def _update_qvalue_models(self,
-                              transitions: list[Transition],
-                              all_qvalues_1: list[tuple[torch.Tensor, list[mm.GroundAction]]],
-                              all_qvalues_2: list[tuple[torch.Tensor, list[mm.GroundAction]]],
-                              qvalue_targets: torch.Tensor,
-                              weights: torch.Tensor) -> torch.Tensor:
+    def _compute_critic_losses(self,
+                               transitions: list[Transition],
+                               all_qvalues_1: list[tuple[torch.Tensor, list[mm.GroundAction]]],
+                               all_qvalues_2: list[tuple[torch.Tensor, list[mm.GroundAction]]]) -> tuple[torch.Tensor, torch.Tensor]:
+        qvalue_targets = self._compute_qvalue_targets(transitions)
         selected_qvalues_1 = torch.stack([qvalues[actions.index(transition.selected_action)] for (qvalues, actions), transition in zip(all_qvalues_1, transitions)])
         selected_qvalues_2 = torch.stack([qvalues[actions.index(transition.selected_action)] for (qvalues, actions), transition in zip(all_qvalues_2, transitions)])
-        qvalue_losses_1 = weights.to(selected_qvalues_1.device) * torch.nn.functional.huber_loss(selected_qvalues_1, qvalue_targets, reduction='none')
-        qvalue_losses_2 = weights.to(selected_qvalues_2.device) * torch.nn.functional.huber_loss(selected_qvalues_2, qvalue_targets, reduction='none')
-        # Optimize first Q-value model.
-        self.qvalue_optimizer_1.zero_grad()
-        (qvalue_losses_1).mean().backward()
-        self.qvalue_optimizer_1.step()
-        self.qvalue_lr_scheduler_1.step()
-        # Optimize second Q-value model.
-        self.qvalue_optimizer_2.zero_grad()
-        (qvalue_losses_2).mean().backward()
-        self.qvalue_optimizer_2.step()
-        self.qvalue_lr_scheduler_2.step()
-        # Return detached losses for monitoring.
-        return (qvalue_losses_1 + qvalue_losses_2).detach()
+        qvalue_losses_1 = torch.nn.functional.huber_loss(selected_qvalues_1, qvalue_targets, reduction='none')
+        qvalue_losses_2 = torch.nn.functional.huber_loss(selected_qvalues_2, qvalue_targets, reduction='none')
+        return qvalue_losses_1, qvalue_losses_2
 
-    def _update_policy_model(self,
-                             batch_qvalues_1: list[tuple[torch.Tensor, list[mm.GroundAction]]],
-                             batch_qvalues_2: list[tuple[torch.Tensor, list[mm.GroundAction]]],
-                             batch_policy_logits: list[tuple[torch.Tensor, list[mm.GroundAction]]],
-                             weights: torch.Tensor) -> torch.Tensor:
+    def _compute_actor_loss(self,
+                            batch_qvalues_1: list[tuple[torch.Tensor, list[mm.GroundAction]]],
+                            batch_qvalues_2: list[tuple[torch.Tensor, list[mm.GroundAction]]],
+                            batch_policy_logits: list[tuple[torch.Tensor, list[mm.GroundAction]]]) -> torch.Tensor:
         batch_policy_probs = [logits.softmax(0) for logits, _ in batch_policy_logits]
         batch_min_qvalues = [torch.min(qvalues_1, qvalues_2) for (qvalues_1, _), (qvalues_2, _) in zip(batch_qvalues_1, batch_qvalues_2)]
         batch_loss: list[torch.Tensor] = []
@@ -319,15 +306,10 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
             entropy_term = entropy_factor * (policy_probs + 1E-8).log()
             policy_loss = (policy_probs * (entropy_term - min_qvalues.detach())).sum()
             batch_loss.append(policy_loss)
-        batch_loss_tensor = torch.stack(batch_loss)
-        losses = weights.to(batch_loss_tensor.device) * batch_loss_tensor
-        self.policy_optimizer.zero_grad()
-        losses.mean().backward()
-        self.policy_optimizer.step()
-        self.policy_lr_scheduler.step()
-        return losses.detach()
+        policy_losses = torch.stack(batch_loss)
+        return policy_losses
 
-    def _update_entropy_factor(self, batch_policy_logits: list[tuple[torch.Tensor, list[mm.GroundAction]]], weights: torch.Tensor):
+    def _compute_entropy_loss(self, batch_policy_logits: list[tuple[torch.Tensor, list[mm.GroundAction]]]) -> torch.Tensor:
         batch_loss: list[torch.Tensor] = []
         for logits, _ in batch_policy_logits:
             logits = logits.detach()
@@ -336,14 +318,10 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
             entropy_factor = self.log_entropy_fraction.exp() * math.log(logits.numel())
             entropy_loss = -(entropy_factor * (entropy.detach() - entropy_target))
             batch_loss.append(entropy_loss)
-        batch_loss_tensor = torch.stack(batch_loss)
-        losses = weights.to(batch_loss_tensor.device) * batch_loss_tensor
-        self.entropy_optimizer.zero_grad()
-        losses.mean().backward()
-        self.entropy_optimizer.step()
-        return losses.detach()
+        entropy_losses = torch.stack(batch_loss)
+        return entropy_losses
 
-    def _update_target_models(self, polyak_factor: float):
+    def _update_target_critics(self, polyak_factor: float) -> None:
         # Update target networks using polyak averaging
         with torch.no_grad():
             for target_param, param in zip(self.qvalue_target_1.parameters(), self.qvalue_model_1.parameters()):
@@ -366,10 +344,37 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
         all_policy_logits = self.policy_model.forward(state_goals)
         all_qvalues_1 = self.qvalue_model_1.forward(state_goals)
         all_qvalues_2 = self.qvalue_model_2.forward(state_goals)
-        qvalue_targets = self._compute_qvalue_targets(transitions)
-        qvalue_losses = self._update_qvalue_models(transitions, all_qvalues_1, all_qvalues_2, qvalue_targets, weights)
-        policy_losses = self._update_policy_model(all_qvalues_1, all_qvalues_2, all_policy_logits, weights)
-        entropy_losses = self._update_entropy_factor(all_policy_logits, weights)
-        self._update_target_models(self.polyak_factor)
-        # TODO: Add bounds loss?
-        return (qvalue_losses + policy_losses).detach()
+
+        # Update critics.
+        qvalue_losses_1, qvalue_losses_2 = self._compute_critic_losses(transitions, all_qvalues_1, all_qvalues_2)
+
+        self.qvalue_optimizer_1.zero_grad()
+        (weights.to(qvalue_losses_1.device) * qvalue_losses_1).mean().backward()
+        self.qvalue_optimizer_1.step()
+        self.qvalue_lr_scheduler_1.step()
+
+        self.qvalue_optimizer_2.zero_grad()
+        (weights.to(qvalue_losses_2.device) * qvalue_losses_2).mean().backward()
+        self.qvalue_optimizer_2.step()
+        self.qvalue_lr_scheduler_2.step()
+
+        # Update actor.
+        policy_losses = self._compute_actor_loss(all_qvalues_1, all_qvalues_2, all_policy_logits)
+
+        self.policy_optimizer.zero_grad()
+        (weights.to(policy_losses.device) * policy_losses).mean().backward()
+        self.policy_optimizer.step()
+        self.policy_lr_scheduler.step()
+
+        # Update entropy.
+        entropy_losses = self._compute_entropy_loss(all_policy_logits)
+
+        self.entropy_optimizer.zero_grad()
+        (weights.to(entropy_losses.device) * entropy_losses).mean().backward()
+        self.entropy_optimizer.step()
+
+        # Update critic targets.
+        self._update_target_critics(self.polyak_factor)
+
+        # Return aggregated losses for monitoring.
+        return (qvalue_losses_1 + qvalue_losses_2 + policy_losses + entropy_losses).detach()
