@@ -233,7 +233,6 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
         assert polyak_factor > 0.0, "Polyak factor must be greater than 0.0."
         assert polyak_factor <= 1.0, "Polyak factor must be less than or equal to 1.0."
         assert entropy_target_scale >= 0.0, "Entropy factor must be greater than or equal to 0.0."
-        assert entropy_target_scale <= 0.0, "Entropy factor must be less than or equal to 1.0."
         assert entropy_lr > 0.0, "Learning rate for policy must be greater than 0.0."
         self.policy_model = policy_model
         self.policy_optimizer = policy_optimizer
@@ -259,7 +258,6 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
 
     def set_entropy_target_scale(self, scale: float):
         assert scale >= 0.0, "Entropy factor must be greater than or equal to 0.0."
-        assert scale <= 0.0, "Entropy factor must be less than or equal to 1.0."
         self.entropy_temperature = scale
 
     def _compute_qvalue_targets(self, transitions: list[Transition]) -> torch.Tensor:
