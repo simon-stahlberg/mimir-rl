@@ -4,6 +4,7 @@ import torch
 
 from abc import ABC, abstractmethod
 from torch.nn.functional import huber_loss
+from typing import Callable
 
 from .models import ActionScalarModel
 from .trajectories import Transition
@@ -252,6 +253,8 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
         self.log_entropy_alpha = torch.nn.Parameter(torch.tensor(0.0, device=device), requires_grad=True)
         self.entropy_optimizer = torch.optim.Adam([self.log_entropy_alpha], lr=entropy_lr)
         self._update_target_critics(1.0)  # Ensure that target models are initialized correctly.
+        # Initialize listener lists.
+        self._listeners_losses: list[Callable[[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], None]] = []
 
     def get_entropy_target_scale(self) -> float:
         return self.entropy_temperature
@@ -259,6 +262,24 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
     def set_entropy_target_scale(self, scale: float):
         assert scale >= 0.0, "Entropy factor must be greater than or equal to 0.0."
         self.entropy_temperature = scale
+
+    def get_entropy_alpha(self) -> float:
+        return self.log_entropy_alpha.exp().item()
+
+    def _notify_listeners_losses(self, actor_loss: torch.Tensor, critic_loss_1: torch.Tensor, critic_loss_2: torch.Tensor, entropy_loss: torch.Tensor):
+        for listener in self._listeners_losses:
+            listener(actor_loss, critic_loss_1, critic_loss_2, entropy_loss)
+
+    def register_on_losses(self, callback: Callable[[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], None]):
+        """
+        Register a callback function to be called when the losses are computed.
+        The callback function will be passed the actor loss, critic loss 1, critic loss 2, and entropy loss as arguments.
+
+        Args:
+           callback (Callable[[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], None]): The callback function to register.
+        """
+        assert callable(callback), "Callback must be a callable function."
+        self._listeners_losses.append(callback)
 
     def _compute_qvalue_targets(self, transitions: list[Transition]) -> torch.Tensor:
         with torch.no_grad():
@@ -344,23 +365,26 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
         batch_qvalues_2 = self.qvalue_model_2.forward(state_goals)
 
         # Update critics.
-        qvalue_losses_1, qvalue_losses_2 = self._compute_critic_losses(transitions, batch_qvalues_1, batch_qvalues_2)
+        critic_losses_1, critic_losses_2 = self._compute_critic_losses(transitions, batch_qvalues_1, batch_qvalues_2)
 
         self.qvalue_optimizer_1.zero_grad()
-        (weights.to(qvalue_losses_1.device) * qvalue_losses_1).mean().backward()
+        critic_losses_1 *= weights.to(critic_losses_1.device)
+        critic_losses_1.mean().backward()
         self.qvalue_optimizer_1.step()
         self.qvalue_lr_scheduler_1.step()
 
         self.qvalue_optimizer_2.zero_grad()
-        (weights.to(qvalue_losses_2.device) * qvalue_losses_2).mean().backward()
+        critic_losses_2 *= weights.to(critic_losses_2.device)
+        critic_losses_2.mean().backward()
         self.qvalue_optimizer_2.step()
         self.qvalue_lr_scheduler_2.step()
 
         # Update actor.
-        policy_losses = self._compute_actor_loss(batch_qvalues_1, batch_qvalues_2, batch_policy_logits)
+        actor_losses = self._compute_actor_loss(batch_qvalues_1, batch_qvalues_2, batch_policy_logits)
 
         self.policy_optimizer.zero_grad()
-        (weights.to(policy_losses.device) * policy_losses).mean().backward()
+        actor_losses *= weights.to(actor_losses.device)
+        actor_losses.mean().backward()
         self.policy_optimizer.step()
         self.policy_lr_scheduler.step()
 
@@ -368,11 +392,15 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
         entropy_losses = self._compute_entropy_loss(batch_policy_logits)
 
         self.entropy_optimizer.zero_grad()
-        (weights.to(entropy_losses.device) * entropy_losses).mean().backward()
+        entropy_losses *= weights.to(entropy_losses.device)
+        entropy_losses.mean().backward()
         self.entropy_optimizer.step()
 
         # Update critic targets.
         self._update_target_critics(self.polyak_factor)
 
+        # Notify listeners about the loss values.
+        self._notify_listeners_losses(actor_losses.detach(), critic_losses_1.detach(), critic_losses_2.detach(), entropy_losses.detach())
+
         # Return aggregated losses for monitoring.
-        return (qvalue_losses_1 + qvalue_losses_2 + policy_losses + entropy_losses).detach()
+        return (critic_losses_1 + critic_losses_2 + actor_losses + entropy_losses).detach()

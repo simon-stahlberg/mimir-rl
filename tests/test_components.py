@@ -295,16 +295,16 @@ def test_algorithm_hooks():
     pre_optimize_model: list[bool] = []
     post_optimize_model: list[bool] = []
     train_step: list[bool] = []
-    algorithm.register_sample_problems(lambda x: sample_problems.append(True))
-    algorithm.register_sample_initial_states(lambda x: sample_initial_states.append(True))
-    algorithm.register_sample_goal_conditions(lambda x: sample_goal_conditions.append(True))
-    algorithm.register_sample_trajectories(lambda x: sample_trajectories.append(True))
-    algorithm.register_refine_trajectories(lambda x: refine_trajectories.append(True))
-    algorithm.register_pre_collect_experience(lambda: pre_collect_experience.append(True))
-    algorithm.register_post_collect_experience(lambda: post_collect_experience.append(True))
-    algorithm.register_pre_optimize_model(lambda: pre_optimize_model.append(True))
-    algorithm.register_post_optimize_model(lambda: post_optimize_model.append(True))
-    algorithm.register_train_step(lambda x, l: train_step.append(True))
+    algorithm.register_on_sample_problems(lambda x: sample_problems.append(True))
+    algorithm.register_on_sample_initial_states(lambda x: sample_initial_states.append(True))
+    algorithm.register_on_sample_goal_conditions(lambda x: sample_goal_conditions.append(True))
+    algorithm.register_on_sample_trajectories(lambda x: sample_trajectories.append(True))
+    algorithm.register_on_refine_trajectories(lambda x: refine_trajectories.append(True))
+    algorithm.register_on_pre_collect_experience(lambda: pre_collect_experience.append(True))
+    algorithm.register_on_post_collect_experience(lambda: post_collect_experience.append(True))
+    algorithm.register_on_pre_optimize_model(lambda: pre_optimize_model.append(True))
+    algorithm.register_on_post_optimize_model(lambda: post_optimize_model.append(True))
+    algorithm.register_on_train_step(lambda x, l: train_step.append(True))
     algorithm.fit()
     assert len(sample_problems) == 1
     assert len(sample_initial_states) == 1

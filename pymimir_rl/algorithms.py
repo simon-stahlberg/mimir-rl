@@ -130,34 +130,104 @@ class OffPolicyAlgorithm:
         for listener in self._listeners_post_optimize_model:
             listener()
 
-    def register_sample_problems(self, callback: Callable[[list[mm.Problem]], None]) -> None:
+    def register_on_sample_problems(self, callback: Callable[[list[mm.Problem]], None]) -> None:
+        """
+        Register a callback to be called when problems are sampled in an episode.
+
+        Args:
+            callback (Callable[[list[mm.Problem]], None]): The callback function to register.
+        """
+        assert callable(callback), "Callback must be a callable function."
         self._listeners_sample_problems.append(callback)
 
-    def register_sample_initial_states(self, callback: Callable[[list[mm.State]], None]) -> None:
+    def register_on_sample_initial_states(self, callback: Callable[[list[mm.State]], None]) -> None:
+        """
+        Register a callback to be called when initial states are sampled in an episode.
+
+        Args:
+            callback (Callable[[list[mm.State]], None]): The callback function to register.
+        """
+        assert callable(callback), "Callback must be a callable function."
         self._listeners_sample_initial_states.append(callback)
 
-    def register_sample_goal_conditions(self, callback: Callable[[list[mm.GroundConjunctiveCondition]], None]) -> None:
+    def register_on_sample_goal_conditions(self, callback: Callable[[list[mm.GroundConjunctiveCondition]], None]) -> None:
+        """
+        Register a callback to be called when goal conditions are sampled in an episode.
+
+        Args:
+            callback (Callable[[list[mm.GroundConjunctiveCondition]], None]): The callback function to register.
+        """
+        assert callable(callback), "Callback must be a callable function."
         self._listeners_sample_goal_conditions.append(callback)
 
-    def register_sample_trajectories(self, callback: Callable[[list[Trajectory]], None]) -> None:
+    def register_on_sample_trajectories(self, callback: Callable[[list[Trajectory]], None]) -> None:
+        """
+        Register a callback to be called when trajectories are sampled in an episode.
+
+        Args:
+            callback (Callable[[list[Trajectory]], None]): The callback function to register.
+        """
+        assert callable(callback), "Callback must be a callable function."
         self._listeners_sample_trajectories.append(callback)
 
-    def register_refine_trajectories(self, callback: Callable[[list[Trajectory]], None]) -> None:
+    def register_on_refine_trajectories(self, callback: Callable[[list[Trajectory]], None]) -> None:
+        """
+        Register a callback to be called when trajectories are refined in an episode.
+
+        Args:
+            callback (Callable[[list[Trajectory]], None]): The callback function to register.
+        """
+        assert callable(callback), "Callback must be a callable function."
         self._listeners_refine_trajectories.append(callback)
 
-    def register_pre_collect_experience(self, callback: Callable[[], None]) -> None:
+    def register_on_pre_collect_experience(self, callback: Callable[[], None]) -> None:
+        """
+        Register a callback to be called before collecting experience in an episode.
+
+        Args:
+            callback (Callable[[], None]): The callback function to register.
+        """
+        assert callable(callback), "Callback must be a callable function."
         self._listeners_pre_collect_experience.append(callback)
 
-    def register_post_collect_experience(self, callback: Callable[[], None]) -> None:
+    def register_on_post_collect_experience(self, callback: Callable[[], None]) -> None:
+        """
+        Register a callback to be called after collecting experience in an episode.
+
+        Args:
+            callback (Callable[[], None]): The callback function to register.
+        """
+        assert callable(callback), "Callback must be a callable function."
         self._listeners_post_collect_experience.append(callback)
 
-    def register_train_step(self, callback: Callable[[list[Transition], torch.Tensor], None]) -> None:
+    def register_on_train_step(self, callback: Callable[[list[Transition], torch.Tensor], None]) -> None:
+        """
+        Register a callback to be called before optimizing the model parameters in an episode.
+
+        Args:
+            callback (Callable[[list[Transition], torch.Tensor], None]): The callback function to register.
+        """
+        assert callable(callback), "Callback must be a callable function."
         self._listeners_train_step.append(callback)
 
-    def register_pre_optimize_model(self, callback: Callable[[], None]) -> None:
+    def register_on_pre_optimize_model(self, callback: Callable[[], None]) -> None:
+        """
+        Register a callback to be called before optimizing the model parameters in an episode.
+
+        Args:
+            callback (Callable[[], None]): The callback function to register.
+        """
+        assert callable(callback), "Callback must be a callable function."
         self._listeners_pre_optimize_model.append(callback)
 
-    def register_post_optimize_model(self, callback: Callable[[], None]) -> None:
+    def register_on_post_optimize_model(self, callback: Callable[[], None]) -> None:
+        """
+        Register a callback to be called after optimizing the model parameters in an episode.
+
+        Args:
+            callback (Callable[[], None]): The callback function to register.
+        """
+        assert callable(callback), "Callback must be a callable function."
         self._listeners_post_optimize_model.append(callback)
 
     def sample_problems(self, n: int) -> list[mm.Problem]:
