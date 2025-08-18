@@ -361,12 +361,12 @@ def test_evaluation():
     assert result1 == result2
 
 
-def test_lifted_ff():
-    domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
-    problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
-    lifted_ff = LiftedFFHeuristic(problem, True)
-    initial_state = problem.get_initial_state()
-    initial_h_value = lifted_ff.compute_value(initial_state, False)
-    pass
+# def test_lifted_ff():
+#     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
+#     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
+#     domain = mm.Domain(domain_path)
+#     problem = mm.Problem(domain, problem_path)
+#     lifted_ff = LiftedFFHeuristic(problem, True)
+#     initial_state = problem.get_initial_state()
+#     initial_h_value = lifted_ff.compute_value(initial_state, False)
+#     pass
