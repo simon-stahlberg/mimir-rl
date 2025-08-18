@@ -257,11 +257,11 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
         self._listeners_losses: list[Callable[[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], None]] = []
 
     def get_entropy_target_scale(self) -> float:
-        return self.entropy_temperature
+        return self.entropy_target_scale
 
     def set_entropy_target_scale(self, scale: float):
         assert scale >= 0.0, "Entropy factor must be greater than or equal to 0.0."
-        self.entropy_temperature = scale
+        self.entropy_target_scale = scale
 
     def get_entropy_alpha(self) -> float:
         return self.log_entropy_alpha.exp().item()

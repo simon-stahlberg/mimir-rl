@@ -70,6 +70,10 @@ from .trajectory_refinements import (
     TrajectoryRefiner
 )
 
+# from .heuristics import (
+#     LiftedFFHeuristic
+# )
+
 __all__ = [
     "ActionScalarModel",
     "BoltzmannTrajectorySampler",
@@ -85,6 +89,7 @@ __all__ = [
     "IdentityTrajectoryRefiner",
     "InitialStateSampler",
     "LengthCriteria",
+    # "LiftedFFHeuristic",
     "LiftedHindsightTrajectoryRefiner",
     "OffPolicyAlgorithm",
     "OptimizationFunction",
