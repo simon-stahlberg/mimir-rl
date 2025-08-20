@@ -70,6 +70,10 @@ from .trajectory_refinements import (
     TrajectoryRefiner
 )
 
+from .subtrajectory_sampling import (
+    IWSubtrajectorySampler
+)
+
 # from .heuristics import (
 #     LiftedFFHeuristic
 # )
@@ -88,8 +92,8 @@ __all__ = [
     "GreedyPolicyTrajectorySampler",
     "IdentityTrajectoryRefiner",
     "InitialStateSampler",
+    "IWSubtrajectorySampler",
     "LengthCriteria",
-    # "LiftedFFHeuristic",
     "LiftedHindsightTrajectoryRefiner",
     "OffPolicyAlgorithm",
     "OptimizationFunction",
@@ -112,4 +116,5 @@ __all__ = [
     "TrajectorySampler",
     "Transition",
     "UniformProblemSampler",
+    # "LiftedFFHeuristic",
 ]

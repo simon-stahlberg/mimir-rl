@@ -1,4 +1,5 @@
 import pymimir as mm
+import random
 import torch
 
 from abc import ABC, abstractmethod
@@ -6,6 +7,7 @@ from collections import defaultdict
 
 from .models import ActionScalarModel
 from .reward_functions import RewardFunction
+from .subtrajectory_sampling import SubtrajectorySampler
 from .trajectories import Trajectory
 
 
@@ -13,12 +15,22 @@ class TrajectorySampler(ABC):
     """
     Abstract base class for sampling trajectories.
     """
-    def __init__(self, model: ActionScalarModel, reward_function: RewardFunction) -> None:
+    def __init__(self,
+                 model: ActionScalarModel,
+                 reward_function: RewardFunction,
+                 subtrajectory_sampler: SubtrajectorySampler | None,
+                 subtrajectory_sampling_probability: float) -> None:
         assert isinstance(model, ActionScalarModel), "Model must be an instance of ActionScalarModel."
         assert isinstance(reward_function, RewardFunction), "Reward function must be an instance of RewardFunction."
+        assert isinstance(subtrajectory_sampler, SubtrajectorySampler) or (subtrajectory_sampler is None), "Subtrajectory sampler must be an instance of SubtrajectorySampler or None."
+        assert isinstance(subtrajectory_sampling_probability, float), "Subtrajectory sampling probability must be a float."
+        assert subtrajectory_sampling_probability >= 0.0, "Subtrajectory sampling probability must be at least 0.0."
+        assert subtrajectory_sampling_probability <= 1.0, "Subtrajectory sampling probability must be at most 1.0."
         super().__init__()
         self.model = model
         self.reward_function = reward_function
+        self.subtrajectory_sampler = subtrajectory_sampler
+        self.subtrajectory_sampling_probability = subtrajectory_sampling_probability
 
     class RolloutContext:
         def __init__(self, initial_state: mm.State, goal_condition: mm.GroundConjunctiveCondition) -> None:
@@ -75,7 +87,10 @@ class TrajectorySampler(ABC):
                     q_value = q_values[action_idx].item()
                     reward = rewards[action_idx]
                     value = (q_values + torch.tensor(rewards, dtype=torch.float, device=q_values.device)).max().item()
-                    solves = context.goal_condition.holds(successor_state)
+                    is_solved = context.goal_condition.holds(successor_state)
+                    is_dead_end = len(successor_state.generate_applicable_actions()) == 0
+                    exceeds_horizon = len(context.state_sequence) >= horizon
+                    is_done = is_solved or is_dead_end or exceeds_horizon
                     # Update context.
                     context.state_sequence.append(successor_state)
                     context.action_sequence.append(action)
@@ -83,8 +98,31 @@ class TrajectorySampler(ABC):
                     context.q_value_sequence.append(q_value)
                     context.reward_sequence.append(reward)
                     context.closed_set.add(successor_state)
-                    context.solved = solves
-                    context.done = solves or (len(successor_state.generate_applicable_actions()) == 0)
+                    context.solved = is_solved
+                    context.done = is_done
+                # If enabled, sample a subtrajectory
+                if (self.subtrajectory_sampler is not None) and (random.uniform(0.0, 1.0 - 1E-16) < self.subtrajectory_sampling_probability):
+                    for rollout_idx in context_indices:
+                        context = rollout_contexts[rollout_idx]
+                        if not context.done:
+                            start_state = context.state_sequence[-1]
+                            goal_condition = context.goal_condition
+                            subtrajectory = self.subtrajectory_sampler.sample(start_state, goal_condition)
+                            if subtrajectory is not None:
+                                for transition in subtrajectory:
+                                    context.state_sequence.append(transition.successor_state)
+                                    context.action_sequence.append(transition.selected_action)
+                                    context.value_sequence.append(transition.predicted_value)
+                                    context.q_value_sequence.append(transition.predicted_q_value)
+                                    context.reward_sequence.append(transition.immediate_reward)
+                                    context.closed_set.add(transition.successor_state)
+                                final_state = context.state_sequence[-1]
+                                is_solved = goal_condition.holds(final_state)
+                                is_dead_end = len(final_state.generate_applicable_actions()) == 0
+                                exceeds_horizon = len(context.state_sequence) >= horizon
+                                is_done = is_solved or is_dead_end or exceeds_horizon
+                                context.solved = is_solved
+                                context.done = is_done
         # Create trajectories from contexts.
         trajectories: list[Trajectory] = []
         for context in rollout_contexts:
@@ -107,8 +145,12 @@ class PolicyTrajectorySampler(TrajectorySampler):
     Values are treated as logits, and an action is sampled according to the resulting probability distribution.
     """
 
-    def __init__(self, model: ActionScalarModel, reward_function: RewardFunction) -> None:
-        super().__init__(model, reward_function)
+    def __init__(self,
+                 model: ActionScalarModel,
+                 reward_function: RewardFunction,
+                 subtrajectory_sampler: SubtrajectorySampler | None = None,
+                 subtrajectory_sampling_probability: float = 0.1) -> None:
+        super().__init__(model, reward_function, subtrajectory_sampler, subtrajectory_sampling_probability)
 
     def sample_action_index(self, state: mm.State, actions: list[mm.GroundAction], values: torch.Tensor) -> int:
         probabilities = values.softmax(0)
@@ -121,11 +163,16 @@ class EpsilonGreedyTrajectorySampler(TrajectorySampler):
     Samples trajectories according to epsilon-greedy.
     """
 
-    def __init__(self, model: ActionScalarModel, reward_function: RewardFunction, epsilon: float) -> None:
+    def __init__(self,
+                 model: ActionScalarModel,
+                 reward_function: RewardFunction,
+                 epsilon: float,
+                 subtrajectory_sampler: SubtrajectorySampler | None = None,
+                 subtrajectory_sampling_probability: float = 0.1) -> None:
         assert isinstance(epsilon, float), "Epsilon must be a float."
         assert epsilon >= 0.0, "Epsilon must be a probability."
         assert epsilon <= 1.0, "Epsilon must be a probability."
-        super().__init__(model, reward_function)
+        super().__init__(model, reward_function, subtrajectory_sampler, subtrajectory_sampling_probability)
         self.epsilon = epsilon
 
     def set_epsilon(self, epsilon: float) -> None:
@@ -146,10 +193,15 @@ class BoltzmannTrajectorySampler(TrajectorySampler):
     Samples trajectories based on a Boltzmann distribution.
     """
 
-    def __init__(self, model: ActionScalarModel, reward_function: RewardFunction, temperature: float) -> None:
+    def __init__(self,
+                 model: ActionScalarModel,
+                 reward_function: RewardFunction,
+                 temperature: float,
+                 subtrajectory_sampler: SubtrajectorySampler | None = None,
+                 subtrajectory_sampling_probability: float = 0.1) -> None:
         assert isinstance(temperature, float), "Temperature must be a float."
         assert temperature > 0.0, "Temperature must be positive."
-        super().__init__(model, reward_function)
+        super().__init__(model, reward_function, subtrajectory_sampler, subtrajectory_sampling_probability)
         self.temperature = temperature
 
     def set_temperature(self, temperature: float) -> None:
@@ -169,8 +221,15 @@ class StateBoltzmannTrajectorySampler(TrajectorySampler):
     Samples trajectories based on a Boltzmann distribution, that takes into account state counts.
     """
 
-    def __init__(self, model: ActionScalarModel, reward_function: RewardFunction, initial_temperature: float, final_temperature: float, temperature_steps: int) -> None:
-        super().__init__(model, reward_function)
+    def __init__(self,
+                 model: ActionScalarModel,
+                 reward_function: RewardFunction,
+                 initial_temperature: float,
+                 final_temperature: float,
+                 temperature_steps: int,
+                 subtrajectory_sampler: SubtrajectorySampler | None = None,
+                 subtrajectory_sampling_probability: float = 0.1) -> None:
+        super().__init__(model, reward_function, subtrajectory_sampler, subtrajectory_sampling_probability)
         assert isinstance(initial_temperature, float), "Initial temperature must be a float."
         assert isinstance(final_temperature, float), "Final temperature must be a float."
         assert isinstance(temperature_steps, int), "Temperature steps must be an integer."
@@ -201,8 +260,12 @@ class GreedyPolicyTrajectorySampler(TrajectorySampler):
     Samples trajectories based on greedily and deterministically following the policy.
     """
 
-    def __init__(self, model: ActionScalarModel, reward_function: RewardFunction) -> None:
-        super().__init__(model, reward_function)
+    def __init__(self,
+                 model: ActionScalarModel,
+                 reward_function: RewardFunction,
+                 subtrajectory_sampler: SubtrajectorySampler | None = None,
+                 subtrajectory_sampling_probability: float = 0.1) -> None:
+        super().__init__(model, reward_function, subtrajectory_sampler, subtrajectory_sampling_probability)
 
     def sample_action_index(self, state: mm.State, actions: list[mm.GroundAction], values: torch.Tensor) -> int:
         action_index = values.argmax().item()

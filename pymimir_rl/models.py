@@ -17,4 +17,4 @@ class ActionScalarModel(torch.nn.Module):
         Returns:
             list[tuple[torch.Tensor, list[GroundAction]]]: For each state-goal pair, Q-values with corresponding valid actions.
         """
-        raise NotImplementedError("Forward states must be implemented by subclass.")
+        raise NotImplementedError("Forward must be implemented by subclass.")

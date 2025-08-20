@@ -57,7 +57,6 @@ class Trajectory:
             reward = reward_sequence[idx]
             future_rewards = sum(reward_sequence[idx + 1:])
             transition = Transition(current_state, successor_state, selected_action, value, q_value, reward, future_rewards, reward_function, goal_condition, part_of_solution)
-            assert (idx >= len(action_sequence) - 1) or (not transition.achieves_goal), "The trajectory must terminate on goal states."
             self.transitions.append(transition)
 
     def __iter__(self):
@@ -102,16 +101,17 @@ class Trajectory:
                           self.reward_function,
                           goal_condition)
 
-    def validate(self) -> None:
+    def validate(self, should_achieve_goal: bool = True) -> None:
         """
         Validates the trajectory. Raises an AssertionError if any validation fails.
         """
         last_transition = self.transitions[-1]
-        goal_condition = last_transition.goal_condition
-        if goal_condition.holds(last_transition.successor_state):
-            assert last_transition.achieves_goal
-        if last_transition.achieves_goal:
-            assert goal_condition.holds(last_transition.successor_state)
+        if should_achieve_goal:
+            goal_condition = last_transition.goal_condition
+            if goal_condition.holds(last_transition.successor_state):
+                assert last_transition.achieves_goal
+            if last_transition.achieves_goal:
+                assert goal_condition.holds(last_transition.successor_state)
         for i in range(len(self.transitions) - 1):
             assert self.transitions[i].successor_state == self.transitions[i + 1].current_state
         for transition in self.transitions:

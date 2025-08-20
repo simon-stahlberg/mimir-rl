@@ -361,6 +361,38 @@ def test_evaluation():
     assert result1 == result2
 
 
+def test_iw_subtrajectory_sampler():
+    domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
+    problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    reward_function: RewardFunction = ConstantRewardFunction(-1)
+    sampler = IWSubtrajectorySampler(reward_function, 2)
+    subtrajectory = sampler.sample(problem.get_initial_state(), problem.get_goal_condition())
+    assert isinstance(subtrajectory, Trajectory)
+    subtrajectory.validate(False)
+    assert len(subtrajectory) == 3
+
+
+def test_trajectory_sampler_with_subtrajectories():
+    domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
+    problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    model: ActionScalarModel = RGNNWrapper(domain)
+    reward_function: RewardFunction = ConstantRewardFunction(-1)
+    subtrajectory_sampler = IWSubtrajectorySampler(reward_function, 2)
+    trajectory_sampler = EpsilonGreedyTrajectorySampler(model, reward_function, 0.5, subtrajectory_sampler, 1.0)
+    state_goals = [(problem.get_initial_state(), problem.get_goal_condition())]
+    trajectories = trajectory_sampler.sample(state_goals, 100)
+    assert isinstance(trajectories, list)
+    assert len(trajectories) > 0
+    trajectory = trajectories[0]
+    assert trajectory.validate()
+    assert trajectory.is_solution()
+    assert len(trajectory) >= 3
+
+
 # def test_lifted_ff():
 #     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
 #     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
