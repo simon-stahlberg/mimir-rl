@@ -388,7 +388,7 @@ def test_trajectory_sampler_with_subtrajectories():
     assert isinstance(trajectories, list)
     assert len(trajectories) > 0
     trajectory = trajectories[0]
-    assert trajectory.validate()
+    trajectory.validate()
     assert trajectory.is_solution()
     assert len(trajectory) >= 3
 

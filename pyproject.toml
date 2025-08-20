@@ -24,7 +24,7 @@ classifiers = [
 ]
 dependencies = [
   "torch>=2.6.0",
-  "pymimir>=0.13.47",
+  "pymimir>=0.13.49",
   "networkx>=3.5"
 ]
 
