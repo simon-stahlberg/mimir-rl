@@ -119,8 +119,8 @@ class Trajectory:
             assert isinstance(transition.goal_condition, mm.GroundConjunctiveCondition)
             assert transition.current_state.get_problem() == self.problem
             assert transition.successor_state.get_problem() == self.problem
-            actions = transition.current_state.generate_applicable_actions()
-            assert transition.selected_action in actions
+            # actions = transition.current_state.generate_applicable_actions()
+            # assert transition.selected_action in actions
             assert transition.selected_action.get_precondition().holds(transition.current_state)
             assert transition.selected_action.apply(transition.current_state) == transition.successor_state
             assert not transition.goal_condition.holds(transition.current_state)

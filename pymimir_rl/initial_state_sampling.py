@@ -59,19 +59,19 @@ class TopValueInitialStateSampler(InitialStateSampler):
 
     def _update_state_values(self, problem: mm.Problem) -> None:
         with torch.no_grad():
+            # TODO: This code can likely be cleaned up.
             self.model.eval()
             device = next(self.model.parameters()).device
             states = self.state_buffers[problem]
             values = self.value_buffers[problem]
             goal_condition = problem.get_goal_condition()
             state_goals = [(state, goal_condition) for state in states]
-            rewards_list = []
-            for state in states:
-                actions = state.generate_applicable_actions()
-                rewards = [self.reward_function(state, action, action.apply(state), goal_condition) for action in actions]
-                rewards_list.append(torch.tensor(rewards, dtype=torch.float, device=device))
-            q_values_list = self.model.forward(state_goals)
-            new_values = torch.stack([(q_values + rewards).max() for (q_values, _), rewards in zip(q_values_list, rewards_list)])
+            qvalues_actions_list = self.model.forward(state_goals)
+            rewards_list: list[torch.Tensor] = []
+            for state, (_, actions) in zip(states, qvalues_actions_list):
+                rewards = torch.tensor([self.reward_function(state, action, action.apply(state), goal_condition) for action in actions], dtype=torch.float, device=device)
+                rewards_list.append(rewards)
+            new_values = torch.stack([(q_values + rewards).max() for (q_values, _), rewards in zip(qvalues_actions_list, rewards_list)])
             assert len(values) == new_values.numel()
             for idx in range(len(values)):
                 values[idx] = new_values[idx].item()
@@ -95,8 +95,8 @@ class TopValueInitialStateSampler(InitialStateSampler):
         sampled_initial_states: list[mm.State] = []
         updated_problems: set[mm.Problem] = set()
         for problem in problems:
-            sample_original = torch.rand(1).item() < self.sample_original_probability
-            if sample_original:
+            sample_original_initial_state = torch.rand(1).item() < self.sample_original_probability
+            if sample_original_initial_state:
                 sampled_initial_states.append(problem.get_initial_state())
             else:
                 if problem not in updated_problems:
