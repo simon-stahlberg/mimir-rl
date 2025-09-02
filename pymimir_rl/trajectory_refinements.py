@@ -62,7 +62,7 @@ class StateHindsightTrajectoryRefiner(TrajectoryRefiner):
                         if (transition.current_state in closed_set) or goal_condition.holds(transition.current_state):
                             break
                         start_index -= 1
-                    if (start_index + 1) < end_index:
+                    if (start_index + 1) <= end_index:
                         refined_trajectories.append(trajectory.clone_with_goal(start_index + 1, end_index, goal_condition))
                     if len(refined_trajectories) >= self.max_generated:
                         return refined_trajectories
@@ -108,7 +108,7 @@ class PropositionalHindsightTrajectoryRefiner(TrajectoryRefiner):
                                 if (transition.current_state in closed_set) or subgoal.holds(transition.current_state):
                                     break  # Stop when we have found the first "invalid" transition
                                 start_index -= 1
-                            if (start_index + 1) < end_index:
+                            if (start_index + 1) <= end_index:
                                 refined_trajectories.append(trajectory.clone_with_goal(start_index + 1, end_index, subgoal))
                             end_index = start_index
                             break  # Only extract the largest subgoal per index
@@ -208,7 +208,7 @@ class LiftedHindsightTrajectoryRefiner(TrajectoryRefiner):
                             if (transition.current_state in closed_set) or grounded_subgoal.holds(transition.current_state):
                                 break  # Stop when we have found the first "invalid" transition
                             start_index -= 1
-                        if (start_index + 1) < end_index:
+                        if (start_index + 1) <= end_index:
                             refined_trajectories.append(trajectory.clone_with_goal(start_index + 1, end_index, grounded_subgoal))
                         end_index = start_index
                         break  # Only extract the largest subgoal per index
