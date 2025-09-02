@@ -329,16 +329,29 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
         policy_losses = torch.stack(batch_loss)
         return policy_losses
 
-    def _compute_entropy_loss(self, batch_policy_logits: list[tuple[torch.Tensor, list[mm.GroundAction]]]) -> torch.Tensor:
-        batch_losses: list[torch.Tensor] = []
+    # def _compute_entropy_loss(self, batch_policy_logits: list[tuple[torch.Tensor, list[mm.GroundAction]]]) -> torch.Tensor:
+    #     batch_losses: list[torch.Tensor] = []
+    #     for logits, _ in batch_policy_logits:
+    #         entropy_policy = -(logits.softmax(dim=-1) * logits.log_softmax(dim=-1)).sum(0)
+    #         entropy_target = self.entropy_target_scale * math.log(logits.numel())
+    #         entropy_alpha = self.log_entropy_alpha.exp()
+    #         entropy_loss = -entropy_alpha * (entropy_policy.detach() - entropy_target)
+    #         batch_losses.append(entropy_loss)
+    #     entropy_losses = torch.stack(batch_losses)
+    #     return entropy_losses
+
+    def _compute_entropy_loss(self, batch_policy_logits: list[tuple[torch.Tensor, list]]) -> torch.Tensor:
+        losses = []
         for logits, _ in batch_policy_logits:
-            entropy_policy = -(logits.softmax(dim=-1) * logits.log_softmax(dim=-1)).sum(0).detach()
-            entropy_target = self.entropy_target_scale * math.log(logits.numel())
-            entropy_alpha = self.log_entropy_alpha.exp()
-            entropy_loss = -entropy_alpha * (entropy_policy - entropy_target)
-            batch_losses.append(entropy_loss)
-        entropy_losses = torch.stack(batch_losses)
-        return entropy_losses
+            probs = logits.softmax(dim=-1)
+            log_probs = logits.log_softmax(dim=-1)
+            entropy = -(probs * log_probs).sum(dim=-1)
+            num_actions = logits.shape[-1]
+            entropy_target = self.entropy_target_scale * math.log(num_actions)
+            alpha_loss = self.log_entropy_alpha * (entropy.detach() - entropy_target)
+            losses.append(alpha_loss)
+        return torch.stack(losses)
+
 
     def _update_target_critics(self, polyak_factor: float) -> None:
         # Update target networks using polyak averaging.
