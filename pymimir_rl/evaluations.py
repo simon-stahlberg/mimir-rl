@@ -60,8 +60,9 @@ class TDErrorCriteria(EvaluationCriteria):
                     curr = trajectory[idx]
                     succ = trajectory[idx + 1]
                     q_curr = curr.predicted_q_value
-                    q_succ = succ.predicted_q_value + succ.immediate_reward
-                    total_error += abs(q_curr - q_succ)
+                    q_succ = succ.predicted_q_value + curr.immediate_reward
+                    total_error += abs(q_succ - q_curr)
+                total_error += abs(trajectory[-1].predicted_q_value)  # Terminal state should have Q-value 0.
         return round(total_error)
 
     def compare(self, x: int, y: int) -> int:
