@@ -39,6 +39,47 @@ class IdentityTrajectoryRefiner(TrajectoryRefiner):
         return trajectories
 
 
+class PartialStateHindsightTrajectoryRefiner(TrajectoryRefiner):
+    def __init__(self, max_generated: int, remove_non_goal_predicates: bool = True) -> None:
+        super().__init__()
+        self.max_generated = max_generated
+        self.remove_non_goal_predicates = remove_non_goal_predicates
+
+    def refine(self, trajectories: list[Trajectory]) -> list[Trajectory]:
+        refined_trajectories: list[Trajectory] = []
+        for trajectory in trajectories:
+            if len(trajectory) == 0:
+                refined_trajectories.append(trajectory)
+            else:
+                problem = trajectory.problem
+                if self.remove_non_goal_predicates:
+                    whitelist_predicates = set(literal.get_atom().get_predicate() for literal in problem.get_goal_condition())
+                else:
+                    whitelist_predicates = set(problem.get_domain().get_predicates())
+                end_index = len(trajectory) - 1
+                while end_index >= 0:
+                    goal_atoms = [atom for atom in trajectory[end_index].successor_state.get_atoms() if atom.get_predicate() in whitelist_predicates]
+                    if len(goal_atoms) > 0:
+                        goal_size = random.randint(1, len(goal_atoms))
+                        goal_atoms = random.sample(goal_atoms, goal_size)
+                        goal_literals = [mm.GroundLiteral.new(atom, True, problem) for atom in goal_atoms]
+                        goal_condition = mm.GroundConjunctiveCondition.new(goal_literals, problem)
+                        closed_set: set[mm.State] = set()
+                        start_index = end_index
+                        while start_index >= 0:
+                            transition = trajectory[start_index]
+                            closed_set.add(transition.successor_state)
+                            if (transition.current_state in closed_set) or goal_condition.holds(transition.current_state):
+                                break
+                            start_index -= 1
+                        if (start_index + 1) <= end_index:
+                            refined_trajectories.append(trajectory.clone_with_goal(start_index + 1, end_index, goal_condition))
+                        if len(refined_trajectories) >= self.max_generated:
+                            return refined_trajectories
+                        end_index = start_index - 1
+        return refined_trajectories
+
+
 class StateHindsightTrajectoryRefiner(TrajectoryRefiner):
     def __init__(self, max_generated: int):
         self.max_generated = max_generated

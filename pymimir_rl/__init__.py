@@ -67,6 +67,7 @@ from .trajectory_refinements import (
     LiftedHindsightTrajectoryRefiner,
     PropositionalHindsightTrajectoryRefiner,
     StateHindsightTrajectoryRefiner,
+    PartialStateHindsightTrajectoryRefiner,
     TrajectoryRefiner
 )
 
