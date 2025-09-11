@@ -23,7 +23,8 @@ class OffPolicyAlgorithm:
                  problems: list[mm.Problem],
                  loss_function: OptimizationFunction,
                  reward_function: RewardFunction,
-                 replay_buffer: ReplayBuffer,
+                 original_replay_buffer: ReplayBuffer,
+                 hindsight_replay_buffer: ReplayBuffer,
                  trajectory_sampler: TrajectorySampler,
                  horizon: int,
                  rollout_count: int,
@@ -40,7 +41,8 @@ class OffPolicyAlgorithm:
             problems (list[mm.Problem]): List of problem instances.
             loss_function (LossFunction): Function to compute losses.
             reward_function (RewardFunction): Function to compute rewards.
-            replay_buffer (ReplayBuffer): Buffer to store experience transitions.
+            original_replay_buffer (ReplayBuffer): Buffer to store original experience transitions.
+            hindsight_replay_buffer (ReplayBuffer): Buffer to store hindsight experience transitions.
             trajectory_sampler (TrajectorySampler): Sampler for generating trajectories.
             horizon (int): Maximum length of the sampled trajectories.
             rollout_count (int): Number of sampled trajectories.
@@ -55,7 +57,8 @@ class OffPolicyAlgorithm:
         assert len(problems) > 0, "At least one problem must be provided."
         assert isinstance(loss_function, OptimizationFunction), "Loss function must be an instance of LossFunction."
         assert isinstance(reward_function, RewardFunction), "Reward function must be an instance of RewardFunction."
-        assert isinstance(replay_buffer, ReplayBuffer), "Replay buffer must be an instance of RewardBuffer."
+        assert isinstance(hindsight_replay_buffer, ReplayBuffer), "Hindsight replay buffer must be an instance of ReplayBuffer."
+        assert isinstance(original_replay_buffer, ReplayBuffer), "Original replay buffer must be an instance of ReplayBuffer."
         assert isinstance(trajectory_sampler, TrajectorySampler), "Trajectory sampler must be an instance of TrajectorySampler."
         assert isinstance(horizon, int), "Horizon must be an integer."
         assert horizon > 0, "Horizon must be positive."
@@ -64,7 +67,8 @@ class OffPolicyAlgorithm:
         self.problems = problems
         self.loss_function = loss_function
         self.reward_function = reward_function
-        self.replay_buffer = replay_buffer
+        self.original_replay_buffer = original_replay_buffer
+        self.hindsight_replay_buffer = hindsight_replay_buffer
         self.trajectory_sampler = trajectory_sampler
         self.horizon = horizon
         self.rollout_count = rollout_count
@@ -323,10 +327,18 @@ class OffPolicyAlgorithm:
             goal_conditions = self.sample_goal_conditions(problems)
             state_goals = list(zip(initial_states, goal_conditions))
             trajectories = self.sample_trajectories(state_goals)
-            refined_trajectories = self.refine_trajectories(trajectories)
-            for refined_trajectory in refined_trajectories:
-                for refined_transition in refined_trajectory:
-                    self.replay_buffer.push(refined_transition)
+            # Store successful trajectories in the original replay buffers.
+            if self.original_replay_buffer is not None:
+                for trajectory in trajectories:
+                    if trajectory.is_solution():
+                        for transition in trajectory:
+                            self.original_replay_buffer.push(transition)
+            # Store all relabeled trajectories in the hindsight replay buffer.
+            if self.hindsight_replay_buffer is not None:
+                refined_trajectories = self.refine_trajectories(trajectories)
+                for refined_trajectory in refined_trajectories:
+                    for refined_transition in refined_trajectory:
+                        self.hindsight_replay_buffer.push(refined_transition)
         self._notify_post_collect_experience()
 
     def optimize_model(self, batch_size: int) -> None:
@@ -337,10 +349,33 @@ class OffPolicyAlgorithm:
             batch_size (int): The batch size for model optimization.
         """
         self._notify_pre_optimize_model()
-        if len(self.replay_buffer) > 0:
+        len_original = len(self.original_replay_buffer) if self.original_replay_buffer is not None else 0
+        len_hindsight = len(self.hindsight_replay_buffer) if self.hindsight_replay_buffer is not None else 0
+        buffer_size = len_original + len_hindsight
+        if buffer_size > 0:
             for _ in range(self.train_steps):
-                transitions, weights, indices = self.replay_buffer.sample(batch_size)
+                # Sample half the batch from the original buffer, if available.
+                if self.original_replay_buffer is not None:
+                    org_samples = min(len(self.original_replay_buffer), batch_size // 2)
+                    org_transitions, org_weights, org_indices = self.original_replay_buffer.sample(org_samples)
+                else:
+                    org_samples = 0
+                    org_transitions, org_weights, org_indices = [], torch.tensor([]), torch.tensor([])
+                # Sample from the hindsight buffer to fill the rest of the batch, if available.
+                if self.hindsight_replay_buffer is not None:
+                    her_samples = batch_size - org_samples
+                    her_transitions, her_weights, her_indices = self.hindsight_replay_buffer.sample(her_samples)
+                else:
+                    her_samples = 0
+                    her_transitions, her_weights, her_indices = [], torch.tensor([]), torch.tensor([])
+                # Combine buffers and compute losses.
+                transitions = org_transitions + her_transitions
+                weights = torch.cat((org_weights, her_weights), dim=0)
                 losses = self.loss_function(transitions, weights)
-                self.replay_buffer.update(indices, losses.detach().cpu())
+                cpu_losses = losses.detach().cpu()
+                if self.original_replay_buffer is not None:
+                    self.original_replay_buffer.update(org_indices, cpu_losses[:org_samples])
+                if self.hindsight_replay_buffer is not None:
+                    self.hindsight_replay_buffer.update(her_indices, cpu_losses[org_samples:])
                 self._notify_train_step(transitions, losses.detach())
         self._notify_post_optimize_model()

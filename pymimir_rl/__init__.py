@@ -110,6 +110,7 @@ __all__ = [
     "RewardFunction",
     "StateBoltzmannTrajectorySampler",
     "StateHindsightTrajectoryRefiner",
+    "PartialStateHindsightTrajectoryRefiner",
     "TDErrorCriteria",
     "TopValueInitialStateSampler",
     "Trajectory",
