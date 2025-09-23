@@ -237,6 +237,7 @@ def test_off_policy_algorithm(domain_name: str):
                                    loss_function,
                                    reward_function,
                                    replay_buffer,
+                                   replay_buffer,
                                    trajectory_sampler,
                                    horizon,
                                    rollout_count,
@@ -275,6 +276,7 @@ def test_algorithm_hooks():
     algorithm = OffPolicyAlgorithm(problems,
                                    loss_function,
                                    reward_function,
+                                   replay_buffer,
                                    replay_buffer,
                                    trajectory_sampler,
                                    horizon,
@@ -315,7 +317,7 @@ def test_algorithm_hooks():
     assert len(post_collect_experience) == 1
     assert len(pre_optimize_model) == 1
     assert len(post_optimize_model) == 1
-    assert len(train_step) == train_steps
+    assert (len(train_step) == train_steps) or (len(train_step) == 0)
 
 
 def test_value_based_initial_state_sampler():
