@@ -33,7 +33,7 @@ Homepage = "https://github.com/simon-stahlberg/mimir-rl"
 
 [project.optional-dependencies]
 dev = [
-  "pymimir-rgnn>=0.1.2",
+  "pymimir-rgnn==0.2.1",
   "pytest>=6.0",
   "build",
   "twine"

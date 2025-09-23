@@ -4,7 +4,20 @@ import pytest
 import torch
 
 from pathlib import Path
-from pymimir_rgnn import RelationalGraphNeuralNetwork, RelationalGraphNeuralNetworkConfig, InputType, OutputNodeType, OutputValueType, AggregationFunction
+from pymimir_rgnn import (
+    RelationalGraphNeuralNetwork,
+    HyperparameterConfig,
+    ModuleConfig,
+    SumAggregation,
+    PredicateMLPMessages,
+    MLPUpdates,
+    Encoder,
+    StateEncoder,
+    GroundActionsEncoder,
+    GoalEncoder,
+    Decoder,
+    ActionScalarDecoder
+)
 from pymimir_rl import *
 
 
@@ -15,15 +28,23 @@ DATA_DIR = TEST_DIR / 'data'
 class RGNNWrapper(ActionScalarModel):
     def __init__(self, domain: mm.Domain) -> None:
         super().__init__()  # type: ignore
-        config = RelationalGraphNeuralNetworkConfig(
+
+        hparam_config = HyperparameterConfig(
             domain=domain,
-            input_specification=(InputType.State, InputType.GroundActions, InputType.Goal),
-            output_specification=[('q', OutputNodeType.Action, OutputValueType.Scalar)],
-            message_aggregation=AggregationFunction.Add,
             num_layers=4,
             embedding_size=8
         )
-        self.rgnn = RelationalGraphNeuralNetwork(config)
+
+        input_spec = (StateEncoder(), GroundActionsEncoder(), GoalEncoder())
+        output_spec = [('q', ActionScalarDecoder(hparam_config))]
+
+        module_config = ModuleConfig(
+            aggregation_function=SumAggregation(),
+            message_function=PredicateMLPMessages(hparam_config, input_spec),
+            update_function=MLPUpdates(hparam_config)
+        )
+
+        self.rgnn = RelationalGraphNeuralNetwork(hparam_config, module_config, input_spec, output_spec)  # type: ignore
 
     def forward(self, state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]]) -> list[tuple[torch.Tensor, list[mm.GroundAction]]]:
         input_list: list[tuple[mm.State, list[mm.GroundAction], mm.GroundConjunctiveCondition]] = []
