@@ -46,10 +46,11 @@ class Trajectory:
         assert len(action_sequence) == len(reward_sequence), "State sequence and reward sequence must have the same length."
         assert isinstance(goal_condition, mm.GroundConjunctiveCondition), "Goal condition must be a GroundConjunctiveCondition."
         self.problem = state_sequence[0].get_problem()
-        self.reward_function = reward_function
         self.start_state = state_sequence[0]
         self.final_state = state_sequence[-1]
         self.goal_condition = goal_condition
+        self.achieves_goal = goal_condition.holds(self.final_state)
+        self.reward_function = reward_function
         self.transitions: list[Transition] = []
         part_of_solution = goal_condition.holds(state_sequence[-1])
         for idx in range(len(action_sequence)):
@@ -73,7 +74,7 @@ class Trajectory:
         return self.transitions[index]
 
     def is_solution(self) -> bool:
-        return self.transitions[-1].achieves_goal if len(self.transitions) > 0 else self.goal_condition.holds(self.final_state)
+        return self.achieves_goal
 
     def clone_with_goal(self, start_index_incl: int, end_index_incl: int, goal_condition: mm.GroundConjunctiveCondition) -> 'Trajectory':
         assert start_index_incl >= 0 and end_index_incl < len(self.transitions), "Indices must be within the bounds of the trajectory."
