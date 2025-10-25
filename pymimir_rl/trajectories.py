@@ -52,7 +52,6 @@ class Trajectory:
         self.achieves_goal = goal_condition.holds(self.final_state)
         self.reward_function = reward_function
         self.transitions: list[Transition] = []
-        part_of_solution = goal_condition.holds(state_sequence[-1])
         for idx in range(len(action_sequence)):
             current_state = state_sequence[idx]
             successor_state = state_sequence[idx + 1]
@@ -61,7 +60,7 @@ class Trajectory:
             q_value = q_value_sequence[idx]
             reward = reward_sequence[idx]
             future_rewards = sum(reward_sequence[idx + 1:])
-            transition = Transition(current_state, successor_state, selected_action, value, q_value, reward, future_rewards, reward_function, goal_condition, part_of_solution)
+            transition = Transition(current_state, successor_state, selected_action, value, q_value, reward, future_rewards, reward_function, goal_condition, self.achieves_goal)
             self.transitions.append(transition)
 
     def __iter__(self):
