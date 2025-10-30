@@ -77,6 +77,8 @@ class PartialStateHindsightTrajectoryRefiner(TrajectoryRefiner):
                         if len(refined_trajectories) >= self.max_generated:
                             return refined_trajectories
                         end_index = start_index - 1
+                    else:
+                        end_index -= 1
         return refined_trajectories
 
 
