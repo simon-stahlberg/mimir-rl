@@ -15,6 +15,16 @@ class TrajectorySampler(ABC):
     """
     Abstract base class for sampling trajectories.
     """
+
+    @abstractmethod
+    def sample(self, initial_state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]], horizon: int) -> list[Trajectory]:
+        """Generate trajectories for the given instances using the model."""
+
+
+class PolicyRolloutSampler(TrajectorySampler):
+    """
+    Abstract base class for sampling trajectories.
+    """
     def __init__(self,
                  model: ActionScalarModel,
                  reward_function: RewardFunction,
@@ -66,7 +76,7 @@ class TrajectorySampler(ABC):
                 state_goals = [(context.state_sequence[-1], context.goal_condition) for context in rollout_contexts if not context.done]
                 context_indices = [idx for idx, context in enumerate(rollout_contexts) if not context.done]
                 if len(state_goals) == 0:
-                    break  # All
+                    break  # All trajectories are done.
                 q_values_batch = self.model.forward(state_goals)
                 for rollout_idx, (q_values, applicable_actions) in zip(context_indices, q_values_batch):
                     context = rollout_contexts[rollout_idx]
@@ -140,7 +150,7 @@ class TrajectorySampler(ABC):
         return trajectories
 
 
-class PolicyTrajectorySampler(TrajectorySampler):
+class PolicyTrajectorySampler(PolicyRolloutSampler):
     """
     Values are treated as logits, and an action is sampled according to the resulting probability distribution.
     """
@@ -158,7 +168,7 @@ class PolicyTrajectorySampler(TrajectorySampler):
         return action_index.item()  # type: ignore
 
 
-class EpsilonGreedyTrajectorySampler(TrajectorySampler):
+class EpsilonGreedyTrajectorySampler(PolicyRolloutSampler):
     """
     Samples trajectories according to epsilon-greedy.
     """
@@ -188,7 +198,7 @@ class EpsilonGreedyTrajectorySampler(TrajectorySampler):
             return torch.argmax(values).item()  # type: ignore
 
 
-class BoltzmannTrajectorySampler(TrajectorySampler):
+class BoltzmannTrajectorySampler(PolicyRolloutSampler):
     """
     Samples trajectories based on a Boltzmann distribution.
     """
@@ -216,7 +226,7 @@ class BoltzmannTrajectorySampler(TrajectorySampler):
         return action_index.item()  # type: ignore
 
 
-class StateBoltzmannTrajectorySampler(TrajectorySampler):
+class StateBoltzmannTrajectorySampler(PolicyRolloutSampler):
     """
     Samples trajectories based on a Boltzmann distribution, that takes into account state counts.
     """
@@ -255,7 +265,8 @@ class StateBoltzmannTrajectorySampler(TrajectorySampler):
         action_idx = probabilities.multinomial(num_samples=1)
         return action_idx.item()  # type: ignore
 
-class GreedyPolicyTrajectorySampler(TrajectorySampler):
+
+class GreedyPolicyTrajectorySampler(PolicyRolloutSampler):
     """
     Samples trajectories based on greedily and deterministically following the policy.
     """
@@ -270,3 +281,158 @@ class GreedyPolicyTrajectorySampler(TrajectorySampler):
     def sample_action_index(self, state: mm.State, actions: list[mm.GroundAction], values: torch.Tensor) -> int:
         action_index = values.argmax().item()
         return action_index  # type: ignore
+
+
+class PolicySearchSampler(TrajectorySampler):
+    """
+    Abstract base class for sampling trajectories using search strategies.
+    """
+
+    @abstractmethod
+    def sample(self, initial_state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]], horizon: int) -> list[Trajectory]:
+        """Generate trajectories for the given instances using the model."""
+
+
+# class GBFSTrajectorySampler(PolicySearchSampler):
+#     """
+#     Samples trajectories based on the Greedy Best-First Search (GBFS) strategy.
+#     """
+
+#     def __init__(self,
+#                  model: ActionScalarModel,
+#                  reward_function: RewardFunction) -> None:
+#         super().__init__()
+#         self.model = model
+#         self.reward_function = reward_function
+
+#     def sample(self, initial_state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]], horizon: int) -> list[Trajectory]:
+#         """Generate trajectories for the given instances using the model."""
+#         raise NotImplementedError("GBFSTrajectorySampler is not implemented yet.")
+
+
+class BeamSearchTrajectorySampler(PolicySearchSampler):
+    """
+    Samples trajectories based on the Beam Search strategy.
+    """
+
+    def __init__(self,
+                 model: ActionScalarModel,
+                 reward_function: RewardFunction,
+                 max_beam_size: int) -> None:
+        super().__init__()
+        self.model = model
+        self.reward_function = reward_function
+        self.max_beam_size = max_beam_size
+
+    class SearchContext:
+        def __init__(self, initial_state: mm.State, goal_condition: mm.GroundConjunctiveCondition) -> None:
+            self.transition_map: dict[mm.State, tuple[mm.State, mm.GroundAction, float, float]] = {}
+            self.open_list: list[mm.State] = [initial_state]
+            self.closed_set: set[mm.State] = set([initial_state])
+            self.goal_condition: mm.GroundConjunctiveCondition = goal_condition
+            self.solved: bool = goal_condition.holds(initial_state)
+            self.done: bool = self.solved or (len(initial_state.generate_applicable_actions()) == 0)
+            self.depth: int = 0
+
+    def _update_beam(self, context: SearchContext, horizon: int, beam_q_values: list[tuple[torch.Tensor, list[mm.GroundAction]]]) -> None:
+        # Add current open list states to closed set.
+        for state in context.open_list:
+            context.closed_set.add(state)
+        # Expand each beam.
+        unique_successors = set()
+        candidates: list[tuple[float, float, mm.State, mm.GroundAction, float, mm.State]] = []
+        for state_idx, (q_values, applicable_actions) in enumerate(beam_q_values):
+            q_values = q_values.cpu()
+            priorities = q_values.clone()
+            current_state = context.open_list[state_idx]
+            successor_states: list[mm.State] = []
+            rewards: list[float] = []
+            # Avoid actions leading to already visited states.
+            for action_idx, action in enumerate(applicable_actions):
+                successor_state = action.apply(current_state)
+                successor_states.append(successor_state)
+                rewards.append(self.reward_function(current_state, action, successor_state, context.goal_condition))
+                if successor_state in context.closed_set:
+                    priorities[action_idx] = -1000000.0
+            # Sample an action to apply.
+            for priority, q_value, action, reward, successor_state in zip(priorities, q_values, applicable_actions, rewards, successor_states):
+                if successor_state not in unique_successors:
+                    unique_successors.add(successor_state)
+                    candidates.append((priority.item(), q_value.item(), current_state, action, reward, successor_state))
+        # Select the most promising successors.
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        selected_candidates = candidates[:self.max_beam_size]
+        # Update the beam context.
+        for _, q_value, current_state, action, reward, successor_state in selected_candidates:
+            if successor_state not in context.closed_set:
+                context.transition_map[successor_state] = (current_state, action, reward, q_value)
+        context.open_list = [candidate[5] for candidate in selected_candidates]
+        context.solved = any(context.goal_condition.holds(state) for state in context.open_list)
+        context.done = context.solved or (context.depth >= horizon) or all(len(state.generate_applicable_actions()) == 0 for state in context.open_list)
+        context.depth += 1
+
+
+    def sample(self, initial_state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]], horizon: int) -> list[Trajectory]:
+        """Generate trajectories for the given instances using the model."""
+        # TODO: Is not implemented correctly: we need to take the N best states across the entire beam, not per state in the beam.
+        contexts = [self.SearchContext(initial_state, goal_condition) for initial_state, goal_condition in initial_state_goals]
+        with torch.no_grad():
+            self.model.eval()
+            for _ in range(horizon):
+                state_goals_input: list[tuple[mm.State, mm.GroundConjunctiveCondition]] = []
+                for context in contexts:
+                    if not context.done:
+                        state_goals_input.extend([(state, context.goal_condition) for state in context.open_list])
+                if len(state_goals_input) == 0:
+                    break  # All trajectories are done.
+                # Evaluate all states in the beams.
+                q_values_output = self.model.forward(state_goals_input)
+                # Avoid visiting already visited states.
+                offset = 0
+                for context in contexts:
+                    if not context.done:
+                        beam_size = len(context.open_list)
+                        beam_q_values = q_values_output[offset:offset + beam_size]
+                        self._update_beam(context, horizon, beam_q_values)
+                        offset += beam_size
+        # Create trajectories from contexts.
+        trajectories: list[Trajectory] = []
+        for context in contexts:
+            # Convert data to the trajectory format.
+            state_sequence: list[mm.State] = []
+            action_sequence: list[mm.GroundAction] = []
+            reward_sequence: list[float] = []
+            q_value_sequence: list[float] = []
+            value_sequence: list[float] = []
+            # For each beam, produce a trajectory from the best state in the final open list.
+            final_candidates = [(int(context.goal_condition.holds(state)), context.transition_map[state][3], state) for state in context.open_list]
+            final_candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            _, value, state = final_candidates[0]
+            state_sequence.append(state)
+            value_sequence.append(value)
+            while state in context.transition_map:
+                predecessor_state, action, reward, q_value = context.transition_map[state]
+                state_sequence.append(predecessor_state)
+                action_sequence.append(action)
+                reward_sequence.append(reward)
+                q_value_sequence.append(q_value)
+                value_sequence.append(q_value + reward)
+                state = predecessor_state
+            state_sequence.reverse()
+            action_sequence.reverse()
+            value_sequence.reverse()
+            q_value_sequence.reverse()
+            reward_sequence.reverse()
+            # Create trajectory.
+            trajectories.append(
+                Trajectory(
+                    state_sequence,
+                    action_sequence,
+                    value_sequence,
+                    q_value_sequence,
+                    reward_sequence,
+                    self.reward_function,
+                    context.goal_condition,
+                )
+            )
+        return trajectories

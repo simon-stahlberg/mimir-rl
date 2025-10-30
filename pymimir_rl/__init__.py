@@ -49,6 +49,7 @@ from .goal_condition_sampling import (
 )
 
 from .trajectory_sampling import (
+    BeamSearchTrajectorySampler,
     BoltzmannTrajectorySampler,
     EpsilonGreedyTrajectorySampler,
     GreedyPolicyTrajectorySampler,
@@ -81,6 +82,7 @@ from .subtrajectory_sampling import (
 
 __all__ = [
     "ActionScalarModel",
+    "BeamSearchTrajectorySampler",
     "BoltzmannTrajectorySampler",
     "ConstantRewardFunction",
     "CoverageCriteria",
@@ -100,6 +102,7 @@ __all__ = [
     "OptimizationFunction",
     "OriginalGoalConditionSampler",
     "OriginalInitialStateSampler",
+    "PartialStateHindsightTrajectoryRefiner",
     "PolicyEvaluation",
     "PolicyTrajectorySampler",
     "PrioritizedReplayBuffer",
@@ -110,7 +113,6 @@ __all__ = [
     "RewardFunction",
     "StateBoltzmannTrajectorySampler",
     "StateHindsightTrajectoryRefiner",
-    "PartialStateHindsightTrajectoryRefiner",
     "TDErrorCriteria",
     "TopValueInitialStateSampler",
     "Trajectory",
