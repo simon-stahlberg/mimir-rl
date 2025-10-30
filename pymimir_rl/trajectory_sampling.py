@@ -334,7 +334,7 @@ class BeamSearchTrajectorySampler(PolicySearchSampler):
             self.done: bool = self.solved or (len(initial_state.generate_applicable_actions()) == 0)
             self.depth: int = 0
 
-    def _update_beam(self, context: SearchContext, horizon: int, beam_q_values: list[tuple[torch.Tensor, list[mm.GroundAction]]]) -> None:
+    def _beam_step(self, context: SearchContext, horizon: int, beam_q_values: list[tuple[torch.Tensor, list[mm.GroundAction]]]) -> None:
         # Add current open list states to closed set.
         for state in context.open_list:
             context.closed_set.add(state)
@@ -374,7 +374,6 @@ class BeamSearchTrajectorySampler(PolicySearchSampler):
 
     def sample(self, initial_state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]], horizon: int) -> list[Trajectory]:
         """Generate trajectories for the given instances using the model."""
-        # TODO: Is not implemented correctly: we need to take the N best states across the entire beam, not per state in the beam.
         contexts = [self.SearchContext(initial_state, goal_condition) for initial_state, goal_condition in initial_state_goals]
         with torch.no_grad():
             self.model.eval()
@@ -393,7 +392,7 @@ class BeamSearchTrajectorySampler(PolicySearchSampler):
                     if not context.done:
                         beam_size = len(context.open_list)
                         beam_q_values = q_values_output[offset:offset + beam_size]
-                        self._update_beam(context, horizon, beam_q_values)
+                        self._beam_step(context, horizon, beam_q_values)
                         offset += beam_size
         # Create trajectories from contexts.
         trajectories: list[Trajectory] = []
