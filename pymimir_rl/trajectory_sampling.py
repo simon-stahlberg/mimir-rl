@@ -327,24 +327,27 @@ class BeamSearchTrajectorySampler(PolicySearchSampler):
     class SearchContext:
         def __init__(self, initial_state: mm.State, goal_condition: mm.GroundConjunctiveCondition) -> None:
             self.transition_map: dict[mm.State, tuple[mm.State, mm.GroundAction, float, float]] = {}
+            self.value_map: dict[mm.State, float] = {}
             self.open_list: list[mm.State] = [initial_state]
             self.closed_set: set[mm.State] = set([initial_state])
             self.goal_condition: mm.GroundConjunctiveCondition = goal_condition
             self.solved: bool = goal_condition.holds(initial_state)
             self.done: bool = self.solved or (len(initial_state.generate_applicable_actions()) == 0)
             self.depth: int = 0
+            if self.solved:
+                self.value_map[initial_state] = 0.0
 
-    def _beam_step(self, context: SearchContext, horizon: int, beam_q_values: list[tuple[torch.Tensor, list[mm.GroundAction]]]) -> None:
+    def _beam_step(self, context: SearchContext, horizon: int, beam_successor_values: list[tuple[torch.Tensor, list[mm.GroundAction]]]) -> None:
         # Add current open list states to closed set.
         for state in context.open_list:
             context.closed_set.add(state)
         # Expand each beam.
         unique_successors = set()
-        candidates: list[tuple[float, float, mm.State, mm.GroundAction, float, mm.State]] = []
-        for state_idx, (q_values, applicable_actions) in enumerate(beam_q_values):
-            q_values = q_values.cpu()
-            priorities = q_values.clone()
-            current_state = context.open_list[state_idx]
+        all_candidates: list[tuple[float, float, mm.State, mm.GroundAction, float, mm.State]] = []
+        for open_idx, (successor_values, applicable_actions) in enumerate(beam_successor_values):
+            successor_values = successor_values.cpu()
+            priorities = successor_values.clone()
+            current_state = context.open_list[open_idx]
             successor_states: list[mm.State] = []
             rewards: list[float] = []
             # Avoid actions leading to already visited states.
@@ -354,23 +357,26 @@ class BeamSearchTrajectorySampler(PolicySearchSampler):
                 rewards.append(self.reward_function(current_state, action, successor_state, context.goal_condition))
                 if successor_state in context.closed_set:
                     priorities[action_idx] = -1000000.0
+            # Add the value of the current state if not already present.
+            if current_state not in context.value_map:
+                current_value = (successor_values + torch.tensor(rewards, dtype=torch.float, device=successor_values.device)).max().item()
+                context.value_map[current_state] = current_value
             # Sample an action to apply.
-            for priority, q_value, action, reward, successor_state in zip(priorities, q_values, applicable_actions, rewards, successor_states):
+            for priority, successor_value, action, reward, successor_state in zip(priorities, successor_values, applicable_actions, rewards, successor_states):
                 if successor_state not in unique_successors:
                     unique_successors.add(successor_state)
-                    candidates.append((priority.item(), q_value.item(), current_state, action, reward, successor_state))
+                    all_candidates.append((priority.item(), successor_value.item(), current_state, action, reward, successor_state))
         # Select the most promising successors.
-        candidates.sort(key=lambda x: x[0], reverse=True)
-        selected_candidates = candidates[:self.max_beam_size]
+        all_candidates.sort(key=lambda x: x[0], reverse=True)
+        best_candidates = all_candidates[:self.max_beam_size]
         # Update the beam context.
-        for _, q_value, current_state, action, reward, successor_state in selected_candidates:
+        for _, successor_value, current_state, action, reward, successor_state in best_candidates:
             if successor_state not in context.closed_set:
-                context.transition_map[successor_state] = (current_state, action, reward, q_value)
-        context.open_list = [candidate[5] for candidate in selected_candidates]
+                context.transition_map[successor_state] = (current_state, action, reward, successor_value)
+        context.open_list = [candidate[5] for candidate in best_candidates]
         context.solved = any(context.goal_condition.holds(state) for state in context.open_list)
         context.done = context.solved or (context.depth >= horizon) or all(len(state.generate_applicable_actions()) == 0 for state in context.open_list)
         context.depth += 1
-
 
     def sample(self, initial_state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]], horizon: int) -> list[Trajectory]:
         """Generate trajectories for the given instances using the model."""
@@ -385,14 +391,14 @@ class BeamSearchTrajectorySampler(PolicySearchSampler):
                 if len(state_goals_input) == 0:
                     break  # All trajectories are done.
                 # Evaluate all states in the beams.
-                q_values_output = self.model.forward(state_goals_input)
+                batch_successor_values = self.model.forward(state_goals_input)
                 # Avoid visiting already visited states.
                 offset = 0
                 for context in contexts:
                     if not context.done:
                         beam_size = len(context.open_list)
-                        beam_q_values = q_values_output[offset:offset + beam_size]
-                        self._beam_step(context, horizon, beam_q_values)
+                        beam_successor_values = batch_successor_values[offset:offset + beam_size]
+                        self._beam_step(context, horizon, beam_successor_values)
                         offset += beam_size
         # Create trajectories from contexts.
         trajectories: list[Trajectory] = []
@@ -403,8 +409,14 @@ class BeamSearchTrajectorySampler(PolicySearchSampler):
             reward_sequence: list[float] = []
             q_value_sequence: list[float] = []
             value_sequence: list[float] = []
+            # Approximate the missing values of the final states by using the q-values.
+            for state in context.open_list:
+                if state not in context.value_map:
+                    assert state in context.transition_map
+                    _, _, _, successor_value = context.transition_map[state]
+                    context.value_map[state] = successor_value
             # For each beam, produce a trajectory from the best state in the final open list.
-            final_candidates = [(int(context.goal_condition.holds(state)), context.transition_map[state][3], state) for state in context.open_list]
+            final_candidates = [(int(context.goal_condition.holds(state)), context.value_map[state], state) for state in context.open_list]
             final_candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
             _, value, state = final_candidates[0]
             state_sequence.append(state)
@@ -415,13 +427,13 @@ class BeamSearchTrajectorySampler(PolicySearchSampler):
                 action_sequence.append(action)
                 reward_sequence.append(reward)
                 q_value_sequence.append(q_value)
-                value_sequence.append(q_value + reward)
+                value_sequence.append(value)
                 state = predecessor_state
             state_sequence.reverse()
             action_sequence.reverse()
-            value_sequence.reverse()
-            q_value_sequence.reverse()
             reward_sequence.reverse()
+            q_value_sequence.reverse()
+            value_sequence.reverse()
             # Create trajectory.
             trajectories.append(
                 Trajectory(
