@@ -363,7 +363,7 @@ class BeamSearchTrajectorySampler(PolicySearchSampler):
                 context.value_map[current_state] = current_value
             # Sample an action to apply.
             for priority, successor_value, action, reward, successor_state in zip(priorities, successor_values, applicable_actions, rewards, successor_states):
-                if successor_state not in unique_successors:
+                if (successor_state not in unique_successors) and (len(successor_state.generate_applicable_actions()) > 0):
                     unique_successors.add(successor_state)
                     all_candidates.append((priority.item(), successor_value.item(), current_state, action, reward, successor_state))
         # Select the most promising successors.
@@ -375,7 +375,7 @@ class BeamSearchTrajectorySampler(PolicySearchSampler):
                 context.transition_map[successor_state] = (current_state, action, reward, successor_value)
         context.open_list = [candidate[5] for candidate in best_candidates]
         context.solved = any(context.goal_condition.holds(state) for state in context.open_list)
-        context.done = context.solved or (context.depth >= horizon) or all(len(state.generate_applicable_actions()) == 0 for state in context.open_list)
+        context.done = context.solved or (context.depth >= horizon) or (len(context.open_list) == 0)
         context.depth += 1
 
     def sample(self, initial_state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]], horizon: int) -> list[Trajectory]:
