@@ -11,11 +11,9 @@ from pymimir_rgnn import (
     SumAggregation,
     PredicateMLPMessages,
     MLPUpdates,
-    Encoder,
     StateEncoder,
     GroundActionsEncoder,
     GoalEncoder,
-    Decoder,
     ActionScalarDecoder
 )
 from pymimir_rl import *
@@ -146,6 +144,36 @@ def test_sac_loss():
     losses = loss(transitions, torch.ones(len(transitions)))
     assert losses is not None
     assert len(losses) == len(transitions)
+
+
+def test_ff_reward_function():
+    domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
+    problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    reward_function = FFRewardFunction()
+    current_state = problem.get_initial_state()
+    goal_condition = problem.get_goal_condition()
+    for action in current_state.generate_applicable_actions():
+        successor_state = action.apply(current_state)
+        reward = reward_function(current_state, action, successor_state, goal_condition)
+        assert isinstance(reward, float)
+
+
+def test_sum_reward_function():
+    domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
+    problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    reward_function_1 = ConstantRewardFunction(-1.0)
+    reward_function_2 = FFRewardFunction()
+    sum_reward_function = SumRewardFunction([reward_function_1, reward_function_2])
+    current_state = problem.get_initial_state()
+    goal_condition = problem.get_goal_condition()
+    for action in current_state.generate_applicable_actions():
+        successor_state = action.apply(current_state)
+        reward = sum_reward_function(current_state, action, successor_state, goal_condition)
+        assert isinstance(reward, float)
 
 
 @pytest.mark.parametrize("domain_name, trajectory_sampler_creator", [

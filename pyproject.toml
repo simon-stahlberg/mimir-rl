@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pymimir-rl"
-version = "0.2.0"
+version = "0.2.1"
 description = "Reinforcement Learning (RL) package for Mimir."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,7 +24,7 @@ classifiers = [
 ]
 dependencies = [
   "torch>=2.6.0",
-  "pymimir>=0.13.49",
+  "pymimir>=0.13.55",
   "networkx>=3.5"
 ]
 

@@ -28,7 +28,9 @@ from .replay_buffers import (
 
 from .reward_functions import (
     ConstantRewardFunction,
+    FFRewardFunction,
     GoalTransitionRewardFunction,
+    SumRewardFunction,
     RewardFunction
 )
 
@@ -90,6 +92,7 @@ __all__ = [
     "DQNOptimization",
     "EpsilonGreedyTrajectorySampler",
     "EvaluationCriteria",
+    "FFRewardFunction",
     "GoalConditionSampler",
     "GoalTransitionRewardFunction",
     "GreedyPolicyTrajectorySampler",
@@ -113,6 +116,7 @@ __all__ = [
     "RewardFunction",
     "StateBoltzmannTrajectorySampler",
     "StateHindsightTrajectoryRefiner",
+    "SumRewardFunction",
     "TDErrorCriteria",
     "TopValueInitialStateSampler",
     "Trajectory",
