@@ -1,7 +1,9 @@
+import math
 import pymimir as mm
 
 from abc import ABC, abstractmethod
 from collections import OrderedDict
+
 
 
 class RewardFunction(ABC):
@@ -14,6 +16,10 @@ class RewardFunction(ABC):
         goal_condition: mm.GroundConjunctiveCondition,
     ) -> float:
         pass
+
+    @staticmethod
+    def get_dead_end_reward() -> float:
+        return -10_000
 
     def get_value_bounds(self, immediate_reward: float, future_rewards: float, part_of_solution: bool) -> tuple[float, float]:
         return float('-inf'), float('inf')
@@ -121,8 +127,9 @@ class FFRewardFunction(RewardFunction):
         # Trim the cache to avoid excessive memory usage.
         while len(self.cache) > 10000:
             self.cache.popitem(last=False)
-        # Return the difference in FF values as the reward.
-        return ff_current - ff_successor
+        # Return the difference in FF values as the reward, unless one of them is a dead-end state.
+        reward = ff_current - ff_successor
+        return reward if math.isfinite(reward) else self.get_dead_end_reward()
 
     def get_value_bounds(self, immediate_reward: float, future_rewards: float, part_of_solution: bool) -> tuple[float, float]:
         return (immediate_reward + future_rewards, float('inf')) if part_of_solution else (float('-inf'), float('inf'))
