@@ -14,6 +14,7 @@ from .evaluations import (
     LengthCriteria,
     PolicyEvaluation,
     ProbabilityCriteria,
+    SequentialPolicyEvaluation,
     TDErrorCriteria
 )
 
@@ -114,6 +115,7 @@ __all__ = [
     "PropositionalHindsightTrajectoryRefiner",
     "ReplayBuffer",
     "RewardFunction",
+    "SequentialPolicyEvaluation",
     "StateBoltzmannTrajectorySampler",
     "StateHindsightTrajectoryRefiner",
     "SumRewardFunction",
