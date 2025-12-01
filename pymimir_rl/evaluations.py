@@ -156,17 +156,29 @@ class SequentialPolicyEvaluation:
         trajectory_sampler (TrajectorySampler): A specific strategy for generating trajectories with the model.
         reward_function (RewardFunction): A function for computing rewards along the generated trajectories.
         horizon (int): Maximum length of the generated trajectories.
+        k (int): Number of problems to solve at the same time before moving to the next k problems.
     """
     def __init__(self,
                  problems: list[mm.Problem],
                  criterias: list[EvaluationCriteria],
                  trajectory_sampler: TrajectorySampler,
-                 horizon: int) -> None:
+                 horizon: int,
+                 k: int) -> None:
+        assert isinstance(problems, list), "problems must be a list."
+        assert isinstance(criterias, list), "criterias must be a list."
+        assert isinstance(trajectory_sampler, TrajectorySampler), "trajectory_sampler must be an instance of TrajectorySampler."
+        assert isinstance(horizon, int), "horizon must be an integer."
+        assert isinstance(k, int), "k must be an integer."
+        assert len(problems) >= 1, "problems must contain at least one problem."
+        assert len(criterias) >= 1, "criterias must contain at least one criteria."
+        assert horizon >= 1, "horizon must be at least 1."
+        assert k >= 1, "k must be at least 1."
         # Sort problems by difficulty: first by goal size, then by number of objects.
         self.problems = sorted(problems, key=lambda p: (len(p.get_goal_condition()), len(p.get_objects())))
         self.criterias = criterias
         self.trajectory_sampler = trajectory_sampler
         self.horizon = horizon
+        self.k = k
         self.best_evaluation = None
 
     def evaluate(self) -> tuple[bool, list[int]]:
@@ -181,14 +193,17 @@ class SequentialPolicyEvaluation:
                 - A boolean indicating whether the evaluation improved upon the best seen so far.
                 - A list of evaluation scores for each criterion.
         """
-        # Generate trajectories for each problem sequentially.
+        # Generate trajectories for problems in groups of size k, sequentially.
         successful_trajectories = []
-        for problem in self.problems:
-            state_goal = (problem.get_initial_state(), problem.get_goal_condition())
-            trajectory = self.trajectory_sampler.sample([state_goal], self.horizon)[0]
-            if trajectory.is_solution():
-                successful_trajectories.append(trajectory)
-            else:
+        for idx in range(0, len(self.problems), self.k):
+            continue_evaluation = False
+            state_goals = [(problem.get_initial_state(), problem.get_goal_condition()) for problem in self.problems[idx:idx + self.k]]
+            trajectories = self.trajectory_sampler.sample(state_goals, self.horizon)
+            for trajectory in trajectories:
+                if trajectory.is_solution():
+                    successful_trajectories.append(trajectory)
+                    continue_evaluation = True
+            if not continue_evaluation:
                 break
         # Evaluate only on the successfully solved problems.
         evaluation = [criteria.evaluate(successful_trajectories) for criteria in self.criterias]

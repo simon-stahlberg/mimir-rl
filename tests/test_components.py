@@ -414,6 +414,25 @@ def test_evaluation():
     assert result1 == result2
 
 
+def test_sequential_evaluation():
+    domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
+    problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    problems: list[mm.Problem] = [problem] * 10
+    model: ActionScalarModel = RGNNWrapper(domain)
+    reward_function: RewardFunction = ConstantRewardFunction(-1)
+    trajectory_sampler: TrajectorySampler = GreedyPolicyTrajectorySampler(model, reward_function)
+    criterias: list[EvaluationCriteria] = [CoverageCriteria(), LengthCriteria(False), TDErrorCriteria(False)]
+    horizon: int = 100
+    evaluation = SequentialPolicyEvaluation(problems, criterias, trajectory_sampler, horizon, 3)
+    best1, result1 = evaluation.evaluate()
+    best2, result2 = evaluation.evaluate()
+    assert best1
+    assert not best2
+    assert result1 == result2
+
+
 def test_iw_subtrajectory_sampler():
     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
