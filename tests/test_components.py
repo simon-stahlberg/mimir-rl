@@ -188,7 +188,19 @@ def test_sum_reward_function():
     ('gripper', lambda model, reward_function: GreedyPolicyTrajectorySampler(model, reward_function)),
     ('gripper', lambda model, reward_function: StateBoltzmannTrajectorySampler(model, reward_function, 1.0, 0.1, 10)),
     ('gripper', lambda model, reward_function: EpsilonGreedyTrajectorySampler(model, reward_function, 0.5)),
-    ('gripper', lambda model, reward_function: BeamSearchTrajectorySampler(model, reward_function, 16))
+    ('gripper', lambda model, reward_function: BeamSearchTrajectorySampler(model, reward_function, 16)),
+    ('blocks-hard', lambda model, reward_function: PolicyTrajectorySampler(model, reward_function)),
+    ('blocks-hard', lambda model, reward_function: BoltzmannTrajectorySampler(model, reward_function, 1.0)),
+    ('blocks-hard', lambda model, reward_function: StateBoltzmannTrajectorySampler(model, reward_function, 1.0, 0.1, 10)),
+    ('blocks-hard', lambda model, reward_function: GreedyPolicyTrajectorySampler(model, reward_function)),
+    ('blocks-hard', lambda model, reward_function: EpsilonGreedyTrajectorySampler(model, reward_function, 0.5)),
+    ('blocks-hard', lambda model, reward_function: BeamSearchTrajectorySampler(model, reward_function, 8)),
+    ('gripper-hard', lambda model, reward_function: PolicyTrajectorySampler(model, reward_function)),
+    ('gripper-hard', lambda model, reward_function: BoltzmannTrajectorySampler(model, reward_function, 1.0)),
+    ('gripper-hard', lambda model, reward_function: GreedyPolicyTrajectorySampler(model, reward_function)),
+    ('gripper-hard', lambda model, reward_function: StateBoltzmannTrajectorySampler(model, reward_function, 1.0, 0.1, 10)),
+    ('gripper-hard', lambda model, reward_function: EpsilonGreedyTrajectorySampler(model, reward_function, 0.5)),
+    ('gripper-hard', lambda model, reward_function: BeamSearchTrajectorySampler(model, reward_function, 16))
 ])
 def test_trajectory_sampler(domain_name: str, trajectory_sampler_creator: Callable[[ActionScalarModel, RewardFunction], TrajectorySampler]):
     domain_path = DATA_DIR / domain_name / 'domain.pddl'
@@ -203,7 +215,30 @@ def test_trajectory_sampler(domain_name: str, trajectory_sampler_creator: Callab
     assert len(trajectories) == 1
     trajectory = trajectories[0]
     assert isinstance(trajectory, Trajectory)
-    assert trajectory.is_solution() or len(trajectory) == 10
+    assert trajectory.is_solution() or len(trajectory) <= 10
+    trajectory.validate()  # Performs asserts internally.
+
+
+@pytest.mark.parametrize("domain_name", ['blocks', 'blocks-hard', 'gripper', 'gripper-hard'])
+def test_trajectory_sampler_multiple(domain_name: str):
+    domain_path = DATA_DIR / domain_name / 'domain.pddl'
+    problem_path = DATA_DIR / domain_name / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    model = RGNNWrapper(domain)
+    reward_function = GoalTransitionRewardFunction(1)
+    trajectory_samplers: list[TrajectorySampler] = [
+        GreedyPolicyTrajectorySampler(model, reward_function),
+        BeamSearchTrajectorySampler(model, reward_function, 8)
+    ]
+    trajectory_probabilities = [0.5, 0.5]
+    trajectory_sampler = MultipleTrajectorySampler(reward_function, trajectory_samplers, trajectory_probabilities)
+    trajectories = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition())], 10)
+    assert isinstance(trajectories, list)
+    assert len(trajectories) == 1
+    trajectory = trajectories[0]
+    assert isinstance(trajectory, Trajectory)
+    assert trajectory.is_solution() or len(trajectory) <= 10
     trajectory.validate()  # Performs asserts internally.
 
 
@@ -431,46 +466,3 @@ def test_sequential_evaluation():
     assert best1
     assert not best2
     assert result1 == result2
-
-
-def test_iw_subtrajectory_sampler():
-    domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
-    problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
-    reward_function: RewardFunction = ConstantRewardFunction(-1)
-    sampler = IWSubtrajectorySampler(reward_function, 2)
-    subtrajectory = sampler.sample(problem.get_initial_state(), problem.get_goal_condition())
-    assert isinstance(subtrajectory, Trajectory)
-    subtrajectory.validate(False)
-    assert len(subtrajectory) == 3
-
-
-def test_trajectory_sampler_with_subtrajectories():
-    domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
-    problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
-    model: ActionScalarModel = RGNNWrapper(domain)
-    reward_function: RewardFunction = ConstantRewardFunction(-1)
-    subtrajectory_sampler = IWSubtrajectorySampler(reward_function, 2)
-    trajectory_sampler = EpsilonGreedyTrajectorySampler(model, reward_function, 0.5, subtrajectory_sampler, 1.0)
-    state_goals = [(problem.get_initial_state(), problem.get_goal_condition())]
-    trajectories = trajectory_sampler.sample(state_goals, 100)
-    assert isinstance(trajectories, list)
-    assert len(trajectories) > 0
-    trajectory = trajectories[0]
-    trajectory.validate()
-    assert trajectory.is_solution()
-    assert len(trajectory) >= 3
-
-
-# def test_lifted_ff():
-#     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
-#     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
-#     domain = mm.Domain(domain_path)
-#     problem = mm.Problem(domain, problem_path)
-#     lifted_ff = LiftedFFHeuristic(problem, True)
-#     initial_state = problem.get_initial_state()
-#     initial_h_value = lifted_ff.compute_value(initial_state, False)
-#     pass

@@ -52,13 +52,23 @@ from .goal_condition_sampling import (
 )
 
 from .trajectory_sampling import (
-    BeamSearchTrajectorySampler,
+    TrajectorySampler
+)
+
+from .trajectory_sampling_policy import (
     BoltzmannTrajectorySampler,
     EpsilonGreedyTrajectorySampler,
     GreedyPolicyTrajectorySampler,
     PolicyTrajectorySampler,
-    StateBoltzmannTrajectorySampler,
-    TrajectorySampler
+    StateBoltzmannTrajectorySampler
+)
+
+from .trajectory_sampling_beam import (
+    BeamSearchTrajectorySampler
+)
+
+from .trajectory_sampling_multiple import (
+    MultipleTrajectorySampler
 )
 
 from .trajectories import (
@@ -102,6 +112,7 @@ __all__ = [
     "IWSubtrajectorySampler",
     "LengthCriteria",
     "LiftedHindsightTrajectoryRefiner",
+    "MultipleTrajectorySampler",
     "OffPolicyAlgorithm",
     "OptimizationFunction",
     "OriginalGoalConditionSampler",

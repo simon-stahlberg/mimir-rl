@@ -128,7 +128,7 @@ class FFRewardFunction(RewardFunction):
         while len(self.cache) > 10000:
             self.cache.popitem(last=False)
         # Return the difference in FF values as the reward, unless one of them is a dead-end state.
-        reward = ff_current - ff_successor
+        reward = ff_current - ff_successor  # TODO: Should ff_successor be multiplied by the discount factor?
         return reward if math.isfinite(reward) else self.get_dead_end_reward()
 
     def get_value_bounds(self, immediate_reward: float, future_rewards: float, part_of_solution: bool) -> tuple[float, float]:

@@ -43,8 +43,9 @@ class IWSubtrajectorySampler(SubtrajectorySampler):
         achieved_goal_condition: list[mm.GroundLiteral] = []
         unachieved_goal_condition: list[mm.GroundLiteral] = []
         for literal in goal_condition:
-            if (state.literal_holds(literal)): achieved_goal_condition.append(literal)
-            else: unachieved_goal_condition.append(literal)
+            if isinstance(literal, mm.GroundLiteral):
+                if (state.literal_holds(literal)): achieved_goal_condition.append(literal)
+                else: unachieved_goal_condition.append(literal)
         # Construct the search space graph.
         predecessors: dict[mm.State, tuple[mm.GroundAction, mm.State]] = {}
         distances: dict[mm.State, int] = {state: 0}

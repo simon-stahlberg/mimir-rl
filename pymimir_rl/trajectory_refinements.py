@@ -53,7 +53,7 @@ class PartialStateHindsightTrajectoryRefiner(TrajectoryRefiner):
             else:
                 problem = trajectory.problem
                 if self.remove_non_goal_predicates:
-                    whitelist_predicates = set(literal.get_atom().get_predicate() for literal in problem.get_goal_condition())
+                    whitelist_predicates = set(literal.get_atom().get_predicate() for literal in problem.get_goal_condition() if isinstance(literal, mm.GroundLiteral))
                 else:
                     whitelist_predicates = set(problem.get_domain().get_predicates())
                 end_index = len(trajectory) - 1
