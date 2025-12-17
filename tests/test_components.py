@@ -232,7 +232,7 @@ def test_trajectory_sampler_multiple(domain_name: str):
         BeamSearchTrajectorySampler(model, reward_function, 8)
     ]
     trajectory_probabilities = [0.5, 0.5]
-    trajectory_sampler = MultipleTrajectorySampler(reward_function, trajectory_samplers, trajectory_probabilities)
+    trajectory_sampler = MultipleTrajectorySampler(reward_function, trajectory_samplers, trajectory_probabilities, 3)
     trajectories = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition())], 10)
     assert isinstance(trajectories, list)
     assert len(trajectories) == 1

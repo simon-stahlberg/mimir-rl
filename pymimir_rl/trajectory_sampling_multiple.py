@@ -15,16 +15,20 @@ class MultipleTrajectorySampler(TrajectorySampler):
     def __init__(self,
                  reward_function: RewardFunction,
                  trajectory_samplers: list[TrajectorySampler],
-                 unnormalized_probabilities: list[float]) -> None:
+                 unnormalized_probabilities: list[float],
+                 min_steps: int = 1) -> None:
         super().__init__()
         assert isinstance(reward_function, RewardFunction), "reward_function must be an instance of RewardFunction."
         assert isinstance(trajectory_samplers, list), "trajectory_samplers must be a list."
         assert isinstance(unnormalized_probabilities, list), "unnormalized_probabilities must be a list."
+        assert isinstance(min_steps, int) and min_steps > 0, "min_steps must be a positive integer."
         assert len(trajectory_samplers) == len(unnormalized_probabilities), "Number of samplers must match number of probabilities."
         total_unnormalized = sum(unnormalized_probabilities)
         self.reward_function = reward_function
         self.trajectory_samplers = trajectory_samplers
         self.probabilities = [p / total_unnormalized for p in unnormalized_probabilities]
+        self.min_steps = min_steps
+        self.current_step = 0
         self.last_sampler_index = -1
         self.last_sampler_states: tuple[list[TrajectoryState], list[Any]] = ([], [])
 
@@ -45,8 +49,15 @@ class MultipleTrajectorySampler(TrajectorySampler):
         return trajectory_states, internal_states
 
     def _internal_sample(self, trajectory_states: list[TrajectoryState], internal_states: list[Any], max_steps: list[int]) -> None:
+        # Check if we need to select a new sampler.
+        assert self.current_step >= 0, "Current step should never be negative."
+        if self.current_step == 0:
+            self.current_step = self.min_steps - 1  # Inclusive of the current step.
+            sampler_index = random.choices(range(len(self.trajectory_samplers)), weights=self.probabilities, k=1)[0]
+        else:
+            self.current_step -= 1
+            sampler_index = self.last_sampler_index
         # Select a sampler based on the defined probabilities.
-        sampler_index = random.choices(range(len(self.trajectory_samplers)), weights=self.probabilities, k=1)[0]
         if sampler_index != self.last_sampler_index:
             # Finalize the subtrajectory of the last sampler and append it to the main trajectory.
             if self.last_sampler_index != -1:
