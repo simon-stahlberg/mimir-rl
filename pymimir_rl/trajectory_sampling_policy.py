@@ -95,8 +95,8 @@ class PolicyRolloutSampler(TrajectorySampler):
     def sample(self, initial_state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]], horizon: int) -> list[Trajectory]:
         """Generate trajectories for the given instances using the model."""
         trajectory_states, rollout_states = self._initialize(initial_state_goals)
+        max_steps = [horizon for _ in trajectory_states]
         while any(not trajectory_state.done for trajectory_state in trajectory_states):
-            max_steps = [horizon for _ in trajectory_states]
             self._internal_sample(trajectory_states, rollout_states, max_steps)
         self._finalize(trajectory_states, rollout_states)
         return self._to_trajectories(trajectory_states, self.reward_function)
