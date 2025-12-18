@@ -23,14 +23,13 @@ class MultipleTrajectorySampler(TrajectorySampler):
         assert isinstance(unnormalized_probabilities, list), "unnormalized_probabilities must be a list."
         assert isinstance(min_steps, int) and min_steps > 0, "min_steps must be a positive integer."
         assert len(trajectory_samplers) == len(unnormalized_probabilities), "Number of samplers must match number of probabilities."
-        total_unnormalized = sum(unnormalized_probabilities)
         self.reward_function = reward_function
         self.trajectory_samplers = trajectory_samplers
-        self.probabilities = [p / total_unnormalized for p in unnormalized_probabilities]
         self.min_steps = min_steps
         self.current_step = 0
         self.last_sampler_index = -1
         self.last_sampler_states: tuple[list[TrajectoryState], list[Any]] = ([], [])
+        self.set_probabilities(unnormalized_probabilities)
 
     def _append_trajectory_states(self, trajectory_states: list[TrajectoryState], subtrajectory_states: list[TrajectoryState]) -> None:
         for trajectory_state, subtrajectory_state in zip(trajectory_states, subtrajectory_states):
@@ -86,6 +85,26 @@ class MultipleTrajectorySampler(TrajectorySampler):
             self._append_trajectory_states(trajectory_states, last_trajectory_states)
             self.last_sampler_index = -1
             self.last_sampler_states = ([], [])
+
+    def get_probabilities(self) -> list[float]:
+        """
+        Get the normalized probabilities of each trajectory sampler.
+
+        Returns:
+            list[float]: The normalized probabilities corresponding to each trajectory sampler.
+        """
+        return self.probabilities
+
+    def set_probabilities(self, unnormalized_probabilities: list[float]) -> None:
+        """
+        Set new unnormalized probabilities for the trajectory samplers.
+
+        Args:
+            unnormalized_probabilities (list[float]): The new unnormalized probabilities.
+        """
+        assert len(unnormalized_probabilities) == len(self.trajectory_samplers), "Number of probabilities must match number of samplers."
+        total_unnormalized = sum(unnormalized_probabilities)
+        self.probabilities = [p / total_unnormalized for p in unnormalized_probabilities]
 
     def sample(self, initial_state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]], horizon: int) -> list[Trajectory]:
         trajectory_states, internal_states = self._initialize(initial_state_goals)
