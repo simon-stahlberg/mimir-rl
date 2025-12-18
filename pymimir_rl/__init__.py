@@ -3,9 +3,24 @@ from .algorithms import (
 )
 
 from .loss_functions import (
-    DiscreteSoftActorCriticOptimization,
-    DQNOptimization,
     OptimizationFunction
+)
+
+from .loss_functions_dqn import (
+    DQNOptimization
+)
+
+from .loss_functions_sac import (
+    DiscreteSoftActorCriticOptimization
+)
+
+from .loss_functions_td3 import (
+    DiscreteTD3Optimization
+)
+
+from .loss_functions_iqn import (
+    IQNOptimization,
+    ActionQuantileModel
 )
 
 from .evaluations import (
@@ -89,17 +104,15 @@ from .subtrajectory_sampling import (
     IWSubtrajectorySampler
 )
 
-# from .heuristics import (
-#     LiftedFFHeuristic
-# )
-
 __all__ = [
+    "ActionQuantileModel",
     "ActionScalarModel",
     "BeamSearchTrajectorySampler",
     "BoltzmannTrajectorySampler",
     "ConstantRewardFunction",
     "CoverageCriteria",
     "DiscreteSoftActorCriticOptimization",
+    "DiscreteTD3Optimization",
     "DQNOptimization",
     "EpsilonGreedyTrajectorySampler",
     "EvaluationCriteria",
@@ -109,6 +122,7 @@ __all__ = [
     "GreedyPolicyTrajectorySampler",
     "IdentityTrajectoryRefiner",
     "InitialStateSampler",
+    "IQNOptimization",
     "IWSubtrajectorySampler",
     "LengthCriteria",
     "LiftedHindsightTrajectoryRefiner",
@@ -137,5 +151,4 @@ __all__ = [
     "TrajectorySampler",
     "Transition",
     "UniformProblemSampler",
-    # "LiftedFFHeuristic",
 ]
