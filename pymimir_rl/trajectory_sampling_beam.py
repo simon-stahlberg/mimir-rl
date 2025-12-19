@@ -38,38 +38,48 @@ class BeamSearchTrajectorySampler(TrajectorySampler):
         unique_successors = set()
         all_candidates: list[tuple[float, float, mm.State, mm.GroundAction, float, mm.State]] = []
         for open_idx, (successor_values, applicable_actions) in enumerate(beam_successor_values):
-            successor_values = successor_values.cpu()
-            priorities = successor_values.clone()
-            current_state = search_state.open_list[open_idx]
-            successor_states: list[mm.State] = []
-            rewards: list[float] = []
-            # Avoid actions leading to already visited states.
-            for action_idx, action in enumerate(applicable_actions):
-                successor_state = action.apply(current_state)
-                successor_states.append(successor_state)
-                rewards.append(self.reward_function(current_state, action, successor_state, trajectory_state.goal_condition))
-                if successor_state in search_state.closed_set:
-                    priorities[action_idx] = -1000000.0
-            # Add the value of the current state if not already present.
-            if current_state not in search_state.value_map:
-                current_value = (successor_values + torch.tensor(rewards, dtype=torch.float, device=successor_values.device)).max().item()
-                search_state.value_map[current_state] = current_value
-            # Sample an action to apply.
-            for priority, successor_value, action, reward, successor_state in zip(priorities, successor_values, applicable_actions, rewards, successor_states):
-                if (successor_state not in unique_successors) and (len(successor_state.generate_applicable_actions()) > 0):
-                    unique_successors.add(successor_state)
-                    all_candidates.append((priority.item(), successor_value.item(), current_state, action, reward, successor_state))
-        # Select the most promising successors.
-        all_candidates.sort(key=lambda x: x[0], reverse=True)
-        best_candidates = all_candidates[:self.max_beam_size]
-        # Update the beam states.
-        for _, successor_value, current_state, action, reward, successor_state in best_candidates:
-            if successor_state not in search_state.closed_set:
-                search_state.transition_map[successor_state] = (current_state, action, reward, successor_value)
-        search_state.open_list = [candidate[5] for candidate in best_candidates]
-        search_state.depth += 1
-        trajectory_state.solved = any(trajectory_state.goal_condition.holds(state) for state in search_state.open_list)
-        trajectory_state.done = trajectory_state.solved or (search_state.depth >= max_depth) or (len(search_state.open_list) == 0)
+            if len(applicable_actions) == 0:  # Dead end.
+                current_state = search_state.open_list[open_idx]
+                if current_state not in search_state.value_map:
+                    dead_end_value = -10_000.0
+                    search_state.value_map[current_state] = dead_end_value
+            else:
+                successor_values = successor_values.cpu()
+                priorities = successor_values.clone()
+                current_state = search_state.open_list[open_idx]
+                successor_states: list[mm.State] = []
+                rewards: list[float] = []
+                # Avoid actions leading to already visited states.
+                for action_idx, action in enumerate(applicable_actions):
+                    successor_state = action.apply(current_state)
+                    successor_states.append(successor_state)
+                    rewards.append(self.reward_function(current_state, action, successor_state, trajectory_state.goal_condition))
+                    if successor_state in search_state.closed_set:
+                        priorities[action_idx] = -100_000.0
+                # Add the value of the current state if not already present.
+                if current_state not in search_state.value_map:
+                    current_value = (successor_values + torch.tensor(rewards, dtype=torch.float, device=successor_values.device)).max().item()
+                    search_state.value_map[current_state] = current_value
+                # Sample an action to apply.
+                for priority, successor_value, action, reward, successor_state in zip(priorities, successor_values, applicable_actions, rewards, successor_states):
+                    if (successor_state not in unique_successors) and (len(successor_state.generate_applicable_actions()) > 0):
+                        unique_successors.add(successor_state)
+                        all_candidates.append((priority.item(), successor_value.item(), current_state, action, reward, successor_state))
+        if len(all_candidates) == 0:
+            # No more successors to explore.
+            trajectory_state.done = True
+        else:
+            # Select the most promising successors.
+            all_candidates.sort(key=lambda x: x[0], reverse=True)
+            best_candidates = all_candidates[:self.max_beam_size]
+            # Update the beam states.
+            for _, successor_value, current_state, action, reward, successor_state in best_candidates:
+                if successor_state not in search_state.closed_set:
+                    search_state.transition_map[successor_state] = (current_state, action, reward, successor_value)
+            search_state.open_list = [candidate[5] for candidate in best_candidates]
+            search_state.depth += 1
+            trajectory_state.solved = any(trajectory_state.goal_condition.holds(state) for state in search_state.open_list)
+            trajectory_state.done = trajectory_state.solved or (search_state.depth >= max_depth) or (len(search_state.open_list) == 0)
 
     def _initialize(self, state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]]) -> tuple[list[TrajectoryState], list[SearchState]]:
         trajectory_states = [TrajectoryState(state, goal_condition) for state, goal_condition in state_goals]

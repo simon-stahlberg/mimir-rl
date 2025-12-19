@@ -219,7 +219,7 @@ def test_trajectory_sampler(domain_name: str, trajectory_sampler_creator: Callab
     trajectory.validate()  # Performs asserts internally.
 
 
-@pytest.mark.parametrize("domain_name", ['blocks', 'blocks-hard', 'gripper', 'gripper-hard'])
+@pytest.mark.parametrize("domain_name", ['blocks', 'blocks-hard', 'gripper', 'gripper-hard', 'spanner', 'spanner-hard'])
 def test_trajectory_sampler_multiple(domain_name: str):
     domain_path = DATA_DIR / domain_name / 'domain.pddl'
     problem_path = DATA_DIR / domain_name / 'problem.pddl'
