@@ -14,14 +14,14 @@ from .loss_functions_sac import (
     DiscreteSoftActorCriticOptimization
 )
 
-# from .loss_functions_td3 import (
-#     DiscreteTD3Optimization
-# )
+from .loss_functions_td3 import (
+    DiscreteTD3Optimization
+)
 
-# from .loss_functions_iqn import (
-#     IQNOptimization,
-#     ActionQuantileModel
-# )
+from .loss_functions_iqn import (
+    IQNOptimization,
+    ActionQuantileModel
+)
 
 from .evaluations import (
     CoverageCriteria,
@@ -105,14 +105,14 @@ from .subtrajectory_sampling import (
 )
 
 __all__ = [
-    # "ActionQuantileModel",
+    "ActionQuantileModel",
     "ActionScalarModel",
     "BeamSearchTrajectorySampler",
     "BoltzmannTrajectorySampler",
     "ConstantRewardFunction",
     "CoverageCriteria",
     "DiscreteSoftActorCriticOptimization",
-    # "DiscreteTD3Optimization",
+    "DiscreteTD3Optimization",
     "DQNOptimization",
     "EpsilonGreedyTrajectorySampler",
     "EvaluationCriteria",
@@ -122,7 +122,7 @@ __all__ = [
     "GreedyPolicyTrajectorySampler",
     "IdentityTrajectoryRefiner",
     "InitialStateSampler",
-    # "IQNOptimization",
+    "IQNOptimization",
     "IWSubtrajectorySampler",
     "LengthCriteria",
     "LiftedHindsightTrajectoryRefiner",

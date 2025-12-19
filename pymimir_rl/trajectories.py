@@ -50,6 +50,10 @@ class Trajectory:
         self.final_state = state_sequence[-1]
         self.goal_condition = goal_condition
         self.achieves_goal = goal_condition.holds(self.final_state)
+        self.enters_dead_end = not self.achieves_goal and (
+            ((reward_sequence[-1] - 1e-6) <= RewardFunction.get_dead_end_reward()) or
+            (len(state_sequence[-1].generate_applicable_actions()) == 0)
+        )
         self.reward_function = reward_function
         self.transitions: list[Transition] = []
         for idx in range(len(action_sequence)):
@@ -74,6 +78,9 @@ class Trajectory:
 
     def is_solution(self) -> bool:
         return self.achieves_goal
+
+    def is_unsolvable(self) -> bool:
+        return self.enters_dead_end
 
     def clone_with_goal(self, start_index_incl: int, end_index_incl: int, goal_condition: mm.GroundConjunctiveCondition) -> 'Trajectory':
         assert start_index_incl >= 0 and end_index_incl < len(self.transitions), "Indices must be within the bounds of the trajectory."

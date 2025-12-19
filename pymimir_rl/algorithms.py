@@ -330,7 +330,7 @@ class OffPolicyAlgorithm:
             # Store successful trajectories in the original replay buffers.
             if self.original_replay_buffer is not None:
                 for trajectory in trajectories:
-                    if trajectory.is_solution():
+                    if trajectory.is_solution() or trajectory.is_unsolvable():
                         for transition in trajectory:
                             self.original_replay_buffer.push(transition)
             # Store all relabeled trajectories in the hindsight replay buffer.
