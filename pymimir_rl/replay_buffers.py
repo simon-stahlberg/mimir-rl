@@ -145,7 +145,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             errors (np.array): Computed TD errors for sampled transitions.
         """
         if indices.numel() > 0:
-            self.priorities[indices] = indices.abs() + 1e-5
+            self.priorities[indices] = errors.abs() + 1e-5
 
     def get_mean_priority(self) -> float:
         if len(self.buffer) == 0: return 0.0
