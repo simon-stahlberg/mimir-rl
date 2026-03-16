@@ -109,9 +109,13 @@ class BeamSearchTrajectorySampler(TrajectorySampler):
         # Approximate the missing values of the final states by using the q-values.
         for state in search_state.open_list:
             if state not in search_state.value_map:
-                assert state in search_state.transition_map
-                _, _, _, successor_value = search_state.transition_map[state]
-                search_state.value_map[state] = successor_value
+                if state in search_state.transition_map:
+                    _, _, _, successor_value = search_state.transition_map[state]
+                    search_state.value_map[state] = successor_value
+                else:
+                    # This happens when the open state is the initial state and no
+                    # predecessor transition exists.
+                    search_state.value_map[state] = 0.0
         # Create trajectory from the best state in the final open list.
         final_candidates = [(int(trajectory_state.goal_condition.holds(state)), search_state.value_map[state], state) for state in search_state.open_list]
         final_candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
