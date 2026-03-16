@@ -200,7 +200,13 @@ def test_sum_reward_function():
     ('gripper-hard', lambda model, reward_function: GreedyPolicyTrajectorySampler(model, reward_function)),
     ('gripper-hard', lambda model, reward_function: StateBoltzmannTrajectorySampler(model, reward_function, 1.0, 0.1, 10)),
     ('gripper-hard', lambda model, reward_function: EpsilonGreedyTrajectorySampler(model, reward_function, 0.5)),
-    ('gripper-hard', lambda model, reward_function: BeamSearchTrajectorySampler(model, reward_function, 16))
+    ('gripper-hard', lambda model, reward_function: BeamSearchTrajectorySampler(model, reward_function, 16)),
+    ('grid-hard', lambda model, reward_function: PolicyTrajectorySampler(model, reward_function)),
+    ('grid-hard', lambda model, reward_function: BoltzmannTrajectorySampler(model, reward_function, 1.0)),
+    ('grid-hard', lambda model, reward_function: GreedyPolicyTrajectorySampler(model, reward_function)),
+    ('grid-hard', lambda model, reward_function: StateBoltzmannTrajectorySampler(model, reward_function, 1.0, 0.1, 10)),
+    ('grid-hard', lambda model, reward_function: EpsilonGreedyTrajectorySampler(model, reward_function, 0.5)),
+    ('grid-hard', lambda model, reward_function: BeamSearchTrajectorySampler(model, reward_function, 16))
 ])
 def test_trajectory_sampler(domain_name: str, trajectory_sampler_creator: Callable[[ActionScalarModel, RewardFunction], TrajectorySampler]):
     domain_path = DATA_DIR / domain_name / 'domain.pddl'

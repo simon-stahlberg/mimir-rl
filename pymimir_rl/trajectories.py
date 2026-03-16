@@ -51,7 +51,7 @@ class Trajectory:
         self.goal_condition = goal_condition
         self.achieves_goal = goal_condition.holds(self.final_state)
         self.enters_dead_end = not self.achieves_goal and (
-            ((reward_sequence[-1] - 1e-6) <= RewardFunction.get_dead_end_reward()) or
+            (len(reward_sequence) > 0 and (reward_sequence[-1] - 1e-6) <= RewardFunction.get_dead_end_reward()) or
             (len(state_sequence[-1].generate_applicable_actions()) == 0)
         )
         self.reward_function = reward_function
@@ -116,6 +116,11 @@ class Trajectory:
         """
         Validates the trajectory. Raises an AssertionError if any validation fails.
         """
+        if len(self.transitions) == 0:
+            # A trajectory can legitimately be empty when the start state is a dead end
+            # or when no progress can be made within the horizon.
+            return
+
         last_transition = self.transitions[-1]
         if should_achieve_goal:
             goal_condition = last_transition.goal_condition
