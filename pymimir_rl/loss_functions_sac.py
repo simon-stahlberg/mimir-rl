@@ -117,6 +117,14 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
         assert callable(callback), "Callback must be a callable function."
         self._listeners_losses.append(callback)
 
+    def _assert_matching_action_order(self,
+                                      reference_actions: list[mm.GroundAction],
+                                      candidate_actions: list[mm.GroundAction]) -> None:
+        assert len(reference_actions) == len(candidate_actions), "Models must return the same number of applicable actions."
+        # Policy and critic outputs are paired position-wise, so applicable actions must be enumerated identically.
+        for reference_action, candidate_action in zip(reference_actions, candidate_actions):
+            assert reference_action.get_index() == candidate_action.get_index(), "Models must return applicable actions in the same order."
+
     def _compute_qvalue_targets(self, transitions: list[Transition]) -> torch.Tensor:
         with torch.no_grad():
             device = next(self.policy_model.parameters()).device
@@ -126,8 +134,10 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
             batch_qvalues_1 = self.qvalue_target_1.forward(successor_state_goals)
             batch_qvalues_2 = self.qvalue_target_2.forward(successor_state_goals)
             target_qvalues: list[torch.Tensor] = []
-            for (policy_logits, _), (qvalues_1, _), (qvalues_2, _) in zip(batch_policy_logits, batch_qvalues_1, batch_qvalues_2):
+            for (policy_logits, policy_actions), (qvalues_1, actions_1), (qvalues_2, actions_2) in zip(batch_policy_logits, batch_qvalues_1, batch_qvalues_2):
                 if policy_logits.numel() > 0:
+                    self._assert_matching_action_order(policy_actions, actions_1)
+                    self._assert_matching_action_order(policy_actions, actions_2)
                     entropy_alpha = self.log_entropy_alpha.exp().detach()
                     entropy_term = entropy_alpha * policy_logits.log_softmax(dim=-1)
                     min_qvalues = torch.min(qvalues_1, qvalues_2)
@@ -155,9 +165,14 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
                             batch_qvalues_1: list[tuple[torch.Tensor, list[mm.GroundAction]]],
                             batch_qvalues_2: list[tuple[torch.Tensor, list[mm.GroundAction]]],
                             batch_policy_logits: list[tuple[torch.Tensor, list[mm.GroundAction]]]) -> torch.Tensor:
-        batch_min_qvalues = [torch.min(qvalues_1, qvalues_2) for (qvalues_1, _), (qvalues_2, _) in zip(batch_qvalues_1, batch_qvalues_2)]
+        batch_min_qvalues: list[torch.Tensor] = []
+        for (qvalues_1, actions_1), (qvalues_2, actions_2) in zip(batch_qvalues_1, batch_qvalues_2):
+            self._assert_matching_action_order(actions_1, actions_2)
+            batch_min_qvalues.append(torch.min(qvalues_1, qvalues_2))
         batch_loss: list[torch.Tensor] = []
-        for (policy_logits, _), min_qvalues in zip(batch_policy_logits, batch_min_qvalues):
+        for (policy_logits, policy_actions), ((_, actions_1), (_, actions_2)), min_qvalues in zip(batch_policy_logits, zip(batch_qvalues_1, batch_qvalues_2), batch_min_qvalues):
+            self._assert_matching_action_order(policy_actions, actions_1)
+            self._assert_matching_action_order(policy_actions, actions_2)
             entropy_alpha = self.log_entropy_alpha.exp().detach()
             entropy_term = entropy_alpha * policy_logits.log_softmax(dim=-1)
             policy_loss = (policy_logits.softmax(dim=-1) * (entropy_term - min_qvalues.detach())).sum()
@@ -208,6 +223,11 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
         Returns:
             torch.Tensor: The loss tensor resulting from the optimization process, used for monitoring as no gradients are attached to it.
         """
+        self.policy_model.train()
+        self.qvalue_model_1.train()
+        self.qvalue_model_2.train()
+        self.qvalue_target_1.eval()
+        self.qvalue_target_2.eval()
         state_goals = [(transition.current_state, transition.goal_condition) for transition in transitions]
         batch_policy_logits = self.policy_model.forward(state_goals)
         batch_qvalues_1 = self.qvalue_model_1.forward(state_goals)
@@ -229,6 +249,8 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
         self.qvalue_lr_scheduler_2.step()
 
         # Update actor.
+        # Reuse the pre-update critic outputs to avoid an additional forward pass; this intentionally trades an
+        # every-so-slightly stale actor target for lower optimization cost when critic updates are small.
         actor_losses = self._compute_actor_loss(batch_qvalues_1, batch_qvalues_2, batch_policy_logits)
 
         self.policy_optimizer.zero_grad()

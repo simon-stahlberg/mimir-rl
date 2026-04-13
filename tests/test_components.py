@@ -146,6 +146,58 @@ def test_sac_loss():
     assert len(losses) == len(transitions)
 
 
+def test_sac_loss_sets_training_modes():
+    domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
+    problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    policy_model = RGNNWrapper(domain)
+    qvalue_model_1 = RGNNWrapper(domain)
+    qvalue_model_2 = RGNNWrapper(domain)
+    qvalue_target_1 = RGNNWrapper(domain)
+    qvalue_target_2 = RGNNWrapper(domain)
+    policy_optimizer = torch.optim.Adam(policy_model.parameters())
+    qvalue_optimizer_1 = torch.optim.Adam(qvalue_model_1.parameters())
+    qvalue_optimizer_2 = torch.optim.Adam(qvalue_model_2.parameters())
+    policy_lr_scheduler = torch.optim.lr_scheduler.StepLR(policy_optimizer, step_size=10, gamma=0.9)
+    qvalue_lr_scheduler_1 = torch.optim.lr_scheduler.StepLR(qvalue_optimizer_1, step_size=10, gamma=0.9)
+    qvalue_lr_scheduler_2 = torch.optim.lr_scheduler.StepLR(qvalue_optimizer_2, step_size=10, gamma=0.9)
+    loss = DiscreteSoftActorCriticOptimization(policy_model,
+                                               policy_optimizer,
+                                               policy_lr_scheduler,
+                                               qvalue_target_1,
+                                               qvalue_model_1,
+                                               qvalue_optimizer_1,
+                                               qvalue_lr_scheduler_1,
+                                               qvalue_target_2,
+                                               qvalue_model_2,
+                                               qvalue_optimizer_2,
+                                               qvalue_lr_scheduler_2,
+                                               0.999,
+                                               0.005,
+                                               1.0,
+                                               0.0003)
+    policy_model.eval()
+    qvalue_model_1.eval()
+    qvalue_model_2.eval()
+    qvalue_target_1.train()
+    qvalue_target_2.train()
+    transitions: list[Transition] = []
+    current_state = problem.get_initial_state()
+    reward_function = ConstantRewardFunction(-1.0)
+    for selected_action in current_state.generate_applicable_actions():
+        successor_state = selected_action.apply(current_state)
+        goal_condition = problem.get_goal_condition()
+        reward = reward_function(current_state, selected_action, successor_state, goal_condition)
+        transitions.append(Transition(current_state, successor_state, selected_action, -1.0, -1.0, reward, 0.0, reward_function, goal_condition, False))
+    loss(transitions, torch.ones(len(transitions)))
+    assert policy_model.training
+    assert qvalue_model_1.training
+    assert qvalue_model_2.training
+    assert not qvalue_target_1.training
+    assert not qvalue_target_2.training
+
+
 def test_ff_reward_function():
     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
