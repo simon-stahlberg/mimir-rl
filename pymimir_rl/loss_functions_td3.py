@@ -25,7 +25,9 @@ class DiscreteTD3Optimization(OptimizationFunction):
                  qvalue_lr_scheduler_2: torch.optim.lr_scheduler.LRScheduler,
                  discount_factor: float,
                  polyak_factor: float = 0.005,
-                 policy_delay: int = 2) -> None:
+                 policy_delay: int = 2,
+                 use_gumbel_softmax: bool = False,
+                 gumbel_softmax_temperature: float = 1.0) -> None:
         """
         Initializes the DiscreteTD3Optimization class.
 
@@ -45,6 +47,7 @@ class DiscreteTD3Optimization(OptimizationFunction):
             discount_factor (float): The discount factor for future rewards.
             polyak_factor (float): The rate at which the target models are updated. Defaults to 0.005.
             policy_delay (int): Number of critic updates before an actor/target update. Defaults to 2.
+            use_gumbel_softmax (bool): If True, use straight-through Gumbel-Softmax for the actor update instead of a softmax expectation.
         """
         super().__init__()
         assert isinstance(policy_model, ActionScalarModel)
@@ -59,6 +62,8 @@ class DiscreteTD3Optimization(OptimizationFunction):
         assert isinstance(discount_factor, float) and 0.0 < discount_factor <= 1.0
         assert isinstance(polyak_factor, float) and 0.0 < polyak_factor <= 1.0
         assert isinstance(policy_delay, int) and policy_delay >= 1
+        assert isinstance(use_gumbel_softmax, bool)
+        assert isinstance(gumbel_softmax_temperature, float) and gumbel_softmax_temperature > 0.0
         self.policy_model = policy_model
         self.policy_optimizer = policy_optimizer
         self.policy_lr_scheduler = policy_lr_scheduler
@@ -74,6 +79,8 @@ class DiscreteTD3Optimization(OptimizationFunction):
         self.discount_factor = discount_factor
         self.polyak_factor = polyak_factor
         self.policy_delay = policy_delay
+        self.use_gumbel_softmax = use_gumbel_softmax
+        self.gumbel_softmax_temperature = gumbel_softmax_temperature
         self._update_step = 0  # Internal step counter for delayed updates
         self._update_targets(1.0)  # Initialize targets
         self._listeners_losses: list[Callable[[torch.Tensor, torch.Tensor, torch.Tensor], None]] = []  # Listener lists
@@ -90,6 +97,14 @@ class DiscreteTD3Optimization(OptimizationFunction):
         for listener in self._listeners_losses:
             listener(actor_loss, critic_loss_1, critic_loss_2)
 
+    def _assert_matching_action_order(self,
+                                      reference_actions: list[mm.GroundAction],
+                                      candidate_actions: list[mm.GroundAction]) -> None:
+        assert len(reference_actions) == len(candidate_actions), "Models must return the same number of applicable actions."
+        # Policy and critic outputs are paired position-wise, so applicable actions must be enumerated identically.
+        for reference_action, candidate_action in zip(reference_actions, candidate_actions):
+            assert reference_action.get_index() == candidate_action.get_index(), "Models must return applicable actions in the same order."
+
     def _compute_qvalue_targets(self, transitions: list[Transition]) -> torch.Tensor:
         """
         Computes the target Q-value: r + gamma * min(Q_t1(s', pi_t(s')), Q_t2(s', pi_t(s')))
@@ -100,20 +115,17 @@ class DiscreteTD3Optimization(OptimizationFunction):
             dead_end_value = -10000
             successor_state_goals = [(transition.successor_state, transition.goal_condition) for transition in transitions]
 
-            # 1. Get Target Policy Actions (Deterministic/Greedy)
             batch_target_policy_logits = self.policy_target.forward(successor_state_goals)
-
-            # 2. Get Target Q-Values
             batch_target_q1 = self.qvalue_target_1.forward(successor_state_goals)
             batch_target_q2 = self.qvalue_target_2.forward(successor_state_goals)
 
             target_qvalues: list[torch.Tensor] = []
-
-            # Zip everything: Logits, Q1, Q2
             iterator = zip(batch_target_policy_logits, batch_target_q1, batch_target_q2)
 
-            for (policy_logits, _), (qvalues_1, _), (qvalues_2, _) in iterator:
+            for (policy_logits, policy_actions), (qvalues_1, actions_1), (qvalues_2, actions_2) in iterator:
                 if policy_logits.numel() > 0:
+                    self._assert_matching_action_order(policy_actions, actions_1)
+                    self._assert_matching_action_order(policy_actions, actions_2)
                     # Discrete TD3: Select action with highest logit (Deterministic Policy)
                     # We do not strictly need "target policy smoothing" noise here as typically done in Continuous TD3,
                     # but relying on the min(Q1, Q2) provides the necessary pessimism.
@@ -162,22 +174,25 @@ class DiscreteTD3Optimization(OptimizationFunction):
         """
         Computes actor loss.
         We want to maximize Q1(s, pi(s)).
-        Since argmax is not differentiable, we use Gumbel-Softmax (hard=True) or Softmax
-        to weight the Q-values, allowing gradients to propagate back to policy logits.
+        Since argmax is not differentiable, we either use a softmax relaxation or a
+        straight-through Gumbel-Softmax sample to allow gradients to propagate back to
+        policy logits.
         """
         batch_losses: list[torch.Tensor] = []
 
-        for (policy_logits, _), (qvalues_1, _) in zip(batch_policy_logits, batch_qvalues_1):
+        for (policy_logits, policy_actions), (qvalues_1, actions_1) in zip(batch_policy_logits, batch_qvalues_1):
             if policy_logits.numel() > 0:
-                # Gumbel-Softmax with hard=True approximates the deterministic action selection
-                # (one-hot vector) but allows gradient flow.
-                # Alternatively, simple softmax can be used: probs = policy_logits.softmax(dim=-1)
-
-                # Using standard softmax weighting for stability in sparse reward / discrete settings:
-                probs = policy_logits.softmax(dim=-1)
+                self._assert_matching_action_order(policy_actions, actions_1)
+                if self.use_gumbel_softmax:
+                    # Straight-through Gumbel-Softmax uses a hard one-hot action in the forward pass
+                    # while keeping the relaxed sample for gradients.
+                    action_weights = F.gumbel_softmax(policy_logits, tau=self.gumbel_softmax_temperature, hard=True, dim=-1)
+                else:
+                    # Using standard softmax weighting for stability in sparse reward / discrete settings.
+                    action_weights = policy_logits.softmax(dim=-1)
 
                 # We detach Q-values because we are updating the Actor, not the Critic here.
-                actor_value = (probs * qvalues_1.detach()).sum()
+                actor_value = (action_weights * qvalues_1.detach()).sum()
 
                 # We want to MAXIMIZE value, so loss is negative.
                 batch_losses.append(-actor_value)
@@ -200,13 +215,20 @@ class DiscreteTD3Optimization(OptimizationFunction):
     def __call__(self, transitions: list[Transition], weights: torch.Tensor) -> torch.Tensor:
         self._update_step += 1
 
+        self.policy_model.train()
+        self.qvalue_model_1.train()
+        self.qvalue_model_2.train()
+        self.policy_target.eval()
+        self.qvalue_target_1.eval()
+        self.qvalue_target_2.eval()
+
         state_goals = [(t.current_state, t.goal_condition) for t in transitions]
 
-        # 1. Forward passes
+        # Forward passes
         batch_qvalues_1 = self.qvalue_model_1.forward(state_goals)
         batch_qvalues_2 = self.qvalue_model_2.forward(state_goals)
 
-        # 2. Update Critics (Always)
+        # Update Critics (Always)
         critic_loss_1, critic_loss_2 = self._compute_critic_losses(transitions, batch_qvalues_1, batch_qvalues_2)
 
         self.qvalue_optimizer_1.zero_grad()
@@ -219,7 +241,7 @@ class DiscreteTD3Optimization(OptimizationFunction):
         self.qvalue_optimizer_2.step()
         self.qvalue_lr_scheduler_2.step()
 
-        # 3. Delayed Actor Updates
+        # Delayed Actor Updates
         actor_loss_val = torch.tensor(0.0, device=critic_loss_1.device)
 
         if self._update_step % self.policy_delay == 0:
@@ -229,6 +251,8 @@ class DiscreteTD3Optimization(OptimizationFunction):
             # Note: We must re-fetch Q1 values or use the ones from above.
             # If we reuse batch_qvalues_1, we must ensure the graph is retained or we rely on detached Qs.
             # In _compute_actor_loss, we detach Qs, so reusing batch_qvalues_1 is safe.
+            # Reuse the pre-update critic outputs to avoid an additional forward pass; this intentionally trades an
+            # every-so-slightly stale actor target for lower optimization cost when critic updates are small.
 
             actor_losses = self._compute_actor_loss(batch_qvalues_1, batch_policy_logits)
 
