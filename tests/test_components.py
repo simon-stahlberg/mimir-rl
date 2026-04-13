@@ -60,6 +60,28 @@ class RGNNWrapper(ActionScalarModel):
         return output
 
 
+class DummyIQNWrapper(ActionQuantileModel):
+    def __init__(self, action_values: list[float]) -> None:
+        super().__init__()  # type: ignore
+        self.action_values = torch.nn.Parameter(torch.tensor(action_values, dtype=torch.float))
+
+    def forward(self,
+                state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]],
+                taus: torch.Tensor | None = None,
+                num_quantiles: int = 32) -> list[tuple[torch.Tensor, list[mm.GroundAction]]]:
+        quantile_count = num_quantiles if taus is None else taus.shape[1]
+        output: list[tuple[torch.Tensor, list[mm.GroundAction]]] = []
+        for state, goal in state_goals:
+            actions = state.generate_applicable_actions()
+            assert len(actions) <= self.action_values.numel()
+            if len(actions) == 0:
+                quantiles = torch.zeros((0, quantile_count), device=self.action_values.device)
+            else:
+                quantiles = self.action_values[:len(actions)].unsqueeze(1).repeat(1, quantile_count)
+            output.append((quantiles, actions))
+        return output
+
+
 def test_model_wrapper():
     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
@@ -387,6 +409,90 @@ def test_td3_loss_sets_training_modes():
     assert not policy_target.training
     assert not qvalue_target_1.training
     assert not qvalue_target_2.training
+
+
+def test_iqn_loss():
+    domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
+    problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    model = DummyIQNWrapper([float(i) for i in range(16)])
+    target_model = DummyIQNWrapper([float(i) for i in range(16)])
+    optimizer = torch.optim.Adam(model.parameters())
+    lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
+    loss = IQNOptimization(model, optimizer, lr_scheduler, target_model, 0.999, use_bounds=False)
+    transitions: list[Transition] = []
+    current_state = problem.get_initial_state()
+    reward_function = ConstantRewardFunction(-1.0)
+    for selected_action in current_state.generate_applicable_actions():
+        successor_state = selected_action.apply(current_state)
+        goal_condition = problem.get_goal_condition()
+        reward = reward_function(current_state, selected_action, successor_state, goal_condition)
+        transitions.append(Transition(current_state, successor_state, selected_action, -1.0, -1.0, reward, 0.0, reward_function, goal_condition, False))
+    losses = loss(transitions, torch.ones(len(transitions)))
+    assert losses is not None
+    assert len(losses) == len(transitions)
+
+
+def test_iqn_loss_sets_training_modes():
+    domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
+    problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    model = DummyIQNWrapper([float(i) for i in range(16)])
+    target_model = DummyIQNWrapper([float(i) for i in range(16)])
+    optimizer = torch.optim.Adam(model.parameters())
+    lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
+    loss = IQNOptimization(model, optimizer, lr_scheduler, target_model, 0.999, use_bounds=False)
+    model.eval()
+    target_model.train()
+    transitions: list[Transition] = []
+    current_state = problem.get_initial_state()
+    reward_function = ConstantRewardFunction(-1.0)
+    for selected_action in current_state.generate_applicable_actions():
+        successor_state = selected_action.apply(current_state)
+        goal_condition = problem.get_goal_condition()
+        reward = reward_function(current_state, selected_action, successor_state, goal_condition)
+        transitions.append(Transition(current_state, successor_state, selected_action, -1.0, -1.0, reward, 0.0, reward_function, goal_condition, False))
+    loss(transitions, torch.ones(len(transitions)))
+    assert model.training
+    assert not target_model.training
+
+
+def test_iqn_target_uses_online_action_selection():
+    domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
+    problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    model = DummyIQNWrapper([10.0, 0.0] + [0.0 for _ in range(14)])
+    target_model = DummyIQNWrapper([1.0, 50.0] + [0.0 for _ in range(14)])
+    optimizer = torch.optim.Adam(model.parameters())
+    lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
+    loss = IQNOptimization(model,
+                           optimizer,
+                           lr_scheduler,
+                           target_model,
+                           1.0,
+                           num_quantiles=4,
+                           num_target_quantiles=4,
+                           num_selection_quantiles=4,
+                           use_bounds=False)
+    current_state = problem.get_initial_state()
+    reward_function = ConstantRewardFunction(-1.0)
+    transition: Transition | None = None
+    for selected_action in current_state.generate_applicable_actions():
+        successor_state = selected_action.apply(current_state)
+        if len(successor_state.generate_applicable_actions()) > 1:
+            goal_condition = problem.get_goal_condition()
+            reward = reward_function(current_state, selected_action, successor_state, goal_condition)
+            transition = Transition(current_state, successor_state, selected_action, -1.0, -1.0, reward, 0.0, reward_function, goal_condition, False)
+            break
+    assert transition is not None
+    device = next(model.parameters()).device
+    target_distributions = loss._compute_target_distributions([transition], device)
+    expected_value = transition.immediate_reward + target_model.action_values[0].item()
+    expected_distribution = torch.full((loss.num_target_quantiles,), expected_value, device=device)
+    assert torch.allclose(target_distributions[0], expected_distribution)
 
 
 def test_ff_reward_function():
