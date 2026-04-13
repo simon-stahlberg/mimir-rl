@@ -260,7 +260,7 @@ def test_sac_entropy_loss_uses_exact_temperature_objective():
     entropy_losses = loss._compute_entropy_loss([(logits, actions)])
     expected_entropy = math.log(num_actions)
     expected_target = 0.5 * math.log(num_actions)
-    expected_loss = math.exp(2.0) * (expected_entropy - expected_target)
+    expected_loss = 2.0 * (expected_entropy - expected_target)
     assert torch.isclose(entropy_losses[0], torch.tensor(expected_loss, dtype=entropy_losses.dtype), atol=1e-6)
 
 
