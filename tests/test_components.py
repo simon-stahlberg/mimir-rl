@@ -1,3 +1,4 @@
+import math
 from typing import Callable
 import pymimir as mm
 import pytest
@@ -196,6 +197,49 @@ def test_sac_loss_sets_training_modes():
     assert qvalue_model_2.training
     assert not qvalue_target_1.training
     assert not qvalue_target_2.training
+
+
+def test_sac_entropy_loss_uses_exact_temperature_objective():
+    domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
+    problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    policy_model = RGNNWrapper(domain)
+    qvalue_model_1 = RGNNWrapper(domain)
+    qvalue_model_2 = RGNNWrapper(domain)
+    qvalue_target_1 = RGNNWrapper(domain)
+    qvalue_target_2 = RGNNWrapper(domain)
+    policy_optimizer = torch.optim.Adam(policy_model.parameters())
+    qvalue_optimizer_1 = torch.optim.Adam(qvalue_model_1.parameters())
+    qvalue_optimizer_2 = torch.optim.Adam(qvalue_model_2.parameters())
+    policy_lr_scheduler = torch.optim.lr_scheduler.StepLR(policy_optimizer, step_size=10, gamma=0.9)
+    qvalue_lr_scheduler_1 = torch.optim.lr_scheduler.StepLR(qvalue_optimizer_1, step_size=10, gamma=0.9)
+    qvalue_lr_scheduler_2 = torch.optim.lr_scheduler.StepLR(qvalue_optimizer_2, step_size=10, gamma=0.9)
+    loss = DiscreteSoftActorCriticOptimization(policy_model,
+                                               policy_optimizer,
+                                               policy_lr_scheduler,
+                                               qvalue_target_1,
+                                               qvalue_model_1,
+                                               qvalue_optimizer_1,
+                                               qvalue_lr_scheduler_1,
+                                               qvalue_target_2,
+                                               qvalue_model_2,
+                                               qvalue_optimizer_2,
+                                               qvalue_lr_scheduler_2,
+                                               0.999,
+                                               0.005,
+                                               0.5,
+                                               0.0003)
+    current_state = problem.get_initial_state()
+    actions = current_state.generate_applicable_actions()
+    num_actions = len(actions)
+    logits = torch.zeros(num_actions, dtype=torch.float)
+    loss.log_entropy_alpha.data.fill_(2.0)
+    entropy_losses = loss._compute_entropy_loss([(logits, actions)])
+    expected_entropy = math.log(num_actions)
+    expected_target = 0.5 * math.log(num_actions)
+    expected_loss = math.exp(2.0) * (expected_entropy - expected_target)
+    assert torch.isclose(entropy_losses[0], torch.tensor(expected_loss, dtype=entropy_losses.dtype), atol=1e-6)
 
 
 def test_ff_reward_function():
