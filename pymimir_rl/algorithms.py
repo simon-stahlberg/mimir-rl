@@ -23,7 +23,7 @@ class OffPolicyAlgorithm:
                  problems: list[mm.Problem],
                  loss_function: OptimizationFunction,
                  reward_function: RewardFunction,
-                 original_replay_buffer: ReplayBuffer,
+                 original_replay_buffer: ReplayBuffer | None,
                  hindsight_replay_buffer: ReplayBuffer,
                  trajectory_sampler: TrajectorySampler,
                  horizon: int,
@@ -57,8 +57,8 @@ class OffPolicyAlgorithm:
         assert len(problems) > 0, "At least one problem must be provided."
         assert isinstance(loss_function, OptimizationFunction), "Loss function must be an instance of LossFunction."
         assert isinstance(reward_function, RewardFunction), "Reward function must be an instance of RewardFunction."
+        assert isinstance(original_replay_buffer, ReplayBuffer) or original_replay_buffer is None, "Original replay buffer must be an instance of ReplayBuffer."
         assert isinstance(hindsight_replay_buffer, ReplayBuffer), "Hindsight replay buffer must be an instance of ReplayBuffer."
-        assert isinstance(original_replay_buffer, ReplayBuffer), "Original replay buffer must be an instance of ReplayBuffer."
         assert isinstance(trajectory_sampler, TrajectorySampler), "Trajectory sampler must be an instance of TrajectorySampler."
         assert isinstance(horizon, int), "Horizon must be an integer."
         assert horizon > 0, "Horizon must be positive."
