@@ -25,7 +25,8 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
                  discount_factor: float,
                  polyak_factor: float = 0.005,
                  entropy_target_scale: float = 1.0,
-                 entropy_lr: float = 0.0003) -> None:
+                 entropy_lr: float = 0.0003,
+                 use_bounds_loss: bool = False) -> None:
         """
         Initializes the DiscreteSoftActorCriticOptimization class.
 
@@ -45,6 +46,7 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
             polyak_factor (float): The rate at which the target models are updated. Must be in the range (0, 1]. Defaults to 0.005.
             entropy_target_scale (float): The initial entropy value. Must be in the range [0, 1]. Defaults to 1.0.
             entropy_lr (float): The learning rate for the entropy temperature. Must be positive. Defaults to 0.0003.
+            use_bounds_loss (bool): If True, adds a Huber regularizer to each critic loss that pulls the predicted soft Q value back toward the per-transition feasible interval [lower, upper] obtained from the reward function, expanded on the upper side by an α·log|A|/(1-γ) entropy slack to accommodate the entropy-augmented Bellman recursion. Defaults to False.
 
         Raises:
             AssertionError: If any of the arguments do not meet the specified type or value requirements.
@@ -65,6 +67,7 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
         assert isinstance(polyak_factor, float), "Polyak factor must be a float."
         assert isinstance(entropy_target_scale, float), "The initial entropy must be a float."
         assert isinstance(entropy_lr, float), "Learning rate for the entropy must be a float."
+        assert isinstance(use_bounds_loss, bool), "Option to use bounds loss must be a Boolean."
         assert discount_factor > 0.0, "Discount factor must be greater than 0.0."
         assert discount_factor <= 1.0, "Discount factor must be less than or equal to 1.0."
         assert polyak_factor > 0.0, "Polyak factor must be greater than 0.0."
@@ -84,6 +87,7 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
         self.qvalue_lr_scheduler_2 = qvalue_lr_scheduler_2
         self.discount_factor = discount_factor
         self.polyak_factor = polyak_factor
+        self.use_bounds_loss = use_bounds_loss
         device = next(self.policy_model.parameters()).device
         self.entropy_target_scale = entropy_target_scale
         self.log_entropy_alpha = torch.nn.Parameter(torch.tensor(0.0, device=device), requires_grad=True)
@@ -159,6 +163,31 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
         selected_qvalues_2 = torch.stack([qvalues[actions.index(transition.selected_action)] for (qvalues, actions), transition in zip(batch_qvalues_2, transitions)])
         qvalue_losses_1 = torch.nn.functional.huber_loss(selected_qvalues_1, qvalue_targets, reduction='none')
         qvalue_losses_2 = torch.nn.functional.huber_loss(selected_qvalues_2, qvalue_targets, reduction='none')
+        if self.use_bounds_loss:
+            device = selected_qvalues_1.device
+            lower_bounds, upper_bounds = self.get_value_bounds(transitions, device)
+            # Expand the upper bound by a single-step entropy slack α · log|A_i| so the bounds
+            # loss does not fight the soft-Q's legitimate entropy contribution. We use the
+            # maximum possible entropy log|A_i| rather than the actual policy entropy: with α
+            # tightly bounded above, max-entropy and actual-entropy slacks differ by at most a
+            # small constant (the policy's deviation from uniform) — small enough that the
+            # simpler form is preferred. (Lower bound is unchanged: entropy is non-negative,
+            # so soft Q ≥ pure Q.)
+            entropy_alpha = self.log_entropy_alpha.exp().detach()
+            action_counts = torch.tensor(
+                [float(qvalues.numel()) for qvalues, _ in batch_qvalues_1],
+                dtype=torch.float, device=device,
+            )
+            entropy_slack = entropy_alpha * torch.log(action_counts.clamp(min=1.0))
+            upper_bounds = upper_bounds + entropy_slack
+            bounds_errors_1 = selected_qvalues_1 - selected_qvalues_1.clamp(lower_bounds, upper_bounds).detach()
+            bounds_errors_2 = selected_qvalues_2 - selected_qvalues_2.clamp(lower_bounds, upper_bounds).detach()
+            qvalue_losses_1 = qvalue_losses_1 + torch.nn.functional.huber_loss(
+                bounds_errors_1, torch.zeros_like(bounds_errors_1), reduction='none'
+            )
+            qvalue_losses_2 = qvalue_losses_2 + torch.nn.functional.huber_loss(
+                bounds_errors_2, torch.zeros_like(bounds_errors_2), reduction='none'
+            )
         return qvalue_losses_1, qvalue_losses_2
 
     def _compute_actor_loss(self,
