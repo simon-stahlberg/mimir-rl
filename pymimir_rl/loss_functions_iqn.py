@@ -22,6 +22,9 @@ class ActionQuantileModel(ActionScalarModel):
         Args:
             state_goals: List of state-goal pairs.
             taus: [batch_size, num_quantiles] tensor of quantile fractions.
+                Output column ``k`` of the returned QuantileValues must correspond to
+                ``taus[:, k]`` (same column order as the supplied taus); the loss relies on
+                this alignment to weight each quantile by its own tau.
         Returns:
             List of (QuantileValues, Actions).
         """
@@ -38,7 +41,8 @@ class IQNOptimization(OptimizationFunction):
                  num_quantiles: int = 64, # Quantiles for Online network (loss)
                  num_target_quantiles: int = 64, # Quantiles for Target network
                  num_selection_quantiles: int = 32, # Quantiles for Action Selection
-                 use_bounds: bool = True # Clip targets to heuristic bounds
+                 use_bounds: bool = True, # Clip targets to heuristic bounds
+                 dead_end_value: float = -1000.0 # Bootstrap value for dead-end successors
                  ) -> None:
         assert isinstance(model, ActionQuantileModel), "Model must be ActionQuantileModel"
         assert isinstance(model_optimizer, torch.optim.Optimizer), "Model optimizer must be Optimizer"
@@ -51,6 +55,7 @@ class IQNOptimization(OptimizationFunction):
         assert isinstance(num_target_quantiles, int) and num_target_quantiles > 0, "N_prime must be positive integer."
         assert isinstance(num_selection_quantiles, int) and num_selection_quantiles > 0, "K must be positive integer."
         assert isinstance(use_bounds, bool), "use_bounds must be boolean."
+        assert isinstance(dead_end_value, float), "dead_end_value must be float."
         self.model = model
         self.model_optimizer = model_optimizer
         self.model_lr_scheduler = model_lr_scheduler
@@ -60,6 +65,7 @@ class IQNOptimization(OptimizationFunction):
         self.num_target_quantiles = num_target_quantiles
         self.num_selection_quantiles = num_selection_quantiles
         self.use_bounds = use_bounds
+        self.dead_end_value = dead_end_value
 
     def _assert_matching_action_order(self,
                                       reference_actions: list[mm.GroundAction],
@@ -92,7 +98,7 @@ class IQNOptimization(OptimizationFunction):
             action_idx = pred_actions.index(transition.selected_action)
             current_theta = pred_qs[action_idx]
             u = target_dist.unsqueeze(0) - current_theta.unsqueeze(1)
-            huber = huber_loss(u, torch.zeros_like(u), reduction='none')
+            huber = huber_loss(u, torch.zeros_like(u), delta=1.0, reduction='none')
             tau_expanded = taus[i].unsqueeze(1).expand_as(u)
             diff = torch.abs(tau_expanded - (u < 0).float())
             element_loss = (diff * huber).sum(dim=1).mean(dim=0)
@@ -121,7 +127,6 @@ class IQNOptimization(OptimizationFunction):
         batch_qs_target = self.target_model.forward(next_states, taus=tau_target)
 
         targets = []
-        dead_end_value = -1000.0 # Adjust based on your domain
 
         for i, transition in enumerate(transitions):
             qs_k, actions_k = batch_qs_selection[i]
@@ -130,7 +135,7 @@ class IQNOptimization(OptimizationFunction):
             self._assert_matching_action_order(actions_k, actions_prime)
 
             if len(actions_k) == 0:
-                target_dist = torch.full((self.num_target_quantiles,), dead_end_value, device=device)
+                target_dist = torch.full((self.num_target_quantiles,), self.dead_end_value, device=device)
             else:
                 action_means = qs_k.mean(dim=1)
                 best_action_idx = torch.argmax(action_means)
