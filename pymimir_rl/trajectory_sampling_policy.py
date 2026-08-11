@@ -69,6 +69,7 @@ class PolicyRolloutSampler(TrajectorySampler):
                         if successor_state in internal_state.closed_set:
                             q_values_copy[action_idx] = -1000000.0
                     # Sample an action to apply.
+                    assert q_values_copy.ndim > 0, "q-value tensor must be non-empty."
                     action_idx = self.sample_action_index(current_state, applicable_actions, q_values_copy)
                     action = applicable_actions[action_idx]
                     successor_state = action.apply(current_state)
