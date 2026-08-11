@@ -21,6 +21,10 @@ class RewardFunction(ABC):
     def get_dead_end_reward() -> float:
         return -10_000
 
+    def is_dead_end(self, state: mm.State, goal_condition: mm.GroundConjunctiveCondition) -> bool:
+        """Return whether the state can safely be proven to be a dead end."""
+        return False
+
     def get_value_bounds(self, immediate_reward: float, future_rewards: float, part_of_solution: bool) -> tuple[float, float]:
         return float('-inf'), float('inf')
 
@@ -40,6 +44,9 @@ class SumRewardFunction(RewardFunction):
         for reward_function in self.reward_functions:
             total_reward += reward_function(current_state, action, successor_state, goal_condition)
         return total_reward
+
+    def is_dead_end(self, state: mm.State, goal_condition: mm.GroundConjunctiveCondition) -> bool:
+        return any(reward_function.is_dead_end(state, goal_condition) for reward_function in self.reward_functions)
 
     def get_value_bounds(self, immediate_reward: float, future_rewards: float, part_of_solution: bool) -> tuple[float, float]:
         min_bound = float('inf')
@@ -98,6 +105,20 @@ class FFRewardFunction(RewardFunction):
         self.heuristics: dict[mm.Problem, mm.FFHeuristic] = {}
         self.cache: OrderedDict[tuple[mm.State, mm.GroundConjunctiveCondition], float] = OrderedDict()
 
+    def _get_heuristic_value(self, state: mm.State, goal_condition: mm.GroundConjunctiveCondition) -> float:
+        problem = state.get_problem()
+        if problem not in self.heuristics:
+            self.heuristics[problem] = mm.FFHeuristic(problem)
+        state_goal = (state, goal_condition)
+        if state_goal not in self.cache:
+            self.cache[state_goal] = self.heuristics[problem].compute_value(state, goal_condition)
+        while len(self.cache) > 10000:
+            self.cache.popitem(last=False)
+        return self.cache[state_goal]
+
+    def is_dead_end(self, state: mm.State, goal_condition: mm.GroundConjunctiveCondition) -> bool:
+        return not math.isfinite(self._get_heuristic_value(state, goal_condition))
+
     def __call__(
         self,
         current_state: mm.State,
@@ -105,28 +126,8 @@ class FFRewardFunction(RewardFunction):
         successor_state: mm.State,
         goal_condition: mm.GroundConjunctiveCondition,
     ) -> float:
-        # Obtain or create the FF heuristic for the problem.
-        problem = current_state.get_problem()
-        if problem not in self.heuristics:
-            self.heuristics[problem] = mm.FFHeuristic(problem)
-        heuristic = self.heuristics[problem]
-        # Obtain the FF value for the current state.
-        current_state_goal = (current_state, goal_condition)
-        if current_state_goal in self.cache:
-            ff_current = self.cache[current_state_goal]
-        else:
-            ff_current = heuristic.compute_value(current_state, goal_condition)
-            self.cache[current_state_goal] = ff_current
-        # Obtain the FF value for the successor state.
-        successor_state_goal = (successor_state, goal_condition)
-        if successor_state_goal in self.cache:
-            ff_successor = self.cache[successor_state_goal]
-        else:
-            ff_successor = heuristic.compute_value(successor_state, goal_condition)
-            self.cache[successor_state_goal] = ff_successor
-        # Trim the cache to avoid excessive memory usage.
-        while len(self.cache) > 10000:
-            self.cache.popitem(last=False)
+        ff_current = self._get_heuristic_value(current_state, goal_condition)
+        ff_successor = self._get_heuristic_value(successor_state, goal_condition)
         # Return the difference in FF values as the reward, unless one of them is a dead-end state.
         reward = ff_current - ff_successor  # TODO: Should ff_successor be multiplied by the discount factor?
         return reward if math.isfinite(reward) else self.get_dead_end_reward()

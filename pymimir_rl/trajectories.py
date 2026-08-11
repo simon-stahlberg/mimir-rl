@@ -21,12 +21,17 @@ class Transition:
         self.selected_action = selected_action
         self.predicted_value = value
         self.predicted_q_value = q_value
-        self.immediate_reward = reward
-        self.future_rewards = future_rewards
         self.reward_function = reward_function
         self.goal_condition = goal_condition
         self.part_of_solution = part_of_solution
         self.achieves_goal = goal_condition.holds(successor_state)
+        self.enters_dead_end = not self.achieves_goal and (
+            reward_function.is_dead_end(successor_state, goal_condition) or
+            len(successor_state.generate_applicable_actions()) == 0
+        )
+        self.is_terminal = self.achieves_goal or self.enters_dead_end
+        self.immediate_reward = RewardFunction.get_dead_end_reward() if self.enters_dead_end else reward
+        self.future_rewards = future_rewards
 
     def __str__(self) -> str:
         return f'Transition({str(self.current_state)}, {str(self.selected_action)}, {str(self.successor_state)}, {str(self.goal_condition)})'
@@ -43,15 +48,28 @@ class Trajectory:
                  goal_condition: mm.GroundConjunctiveCondition):
         assert len(state_sequence) >= 1, "State sequence must contain at least one element."
         assert len(state_sequence) == len(action_sequence) + 1, "State sequence must have one more element than action sequence."
-        assert len(action_sequence) == len(reward_sequence), "State sequence and reward sequence must have the same length."
+        assert len(action_sequence) == len(value_sequence), "Action sequence and value sequence must have the same length."
+        assert len(action_sequence) == len(q_value_sequence), "Action sequence and Q-value sequence must have the same length."
+        assert len(action_sequence) == len(reward_sequence), "Action sequence and reward sequence must have the same length."
         assert isinstance(goal_condition, mm.GroundConjunctiveCondition), "Goal condition must be a GroundConjunctiveCondition."
         self.problem = state_sequence[0].get_problem()
         self.start_state = state_sequence[0]
         self.final_state = state_sequence[-1]
         self.goal_condition = goal_condition
         self.achieves_goal = goal_condition.holds(self.final_state)
+        normalized_rewards = list(reward_sequence)
+        for idx, reward in enumerate(normalized_rewards):
+            successor_state = state_sequence[idx + 1]
+            achieves_goal = goal_condition.holds(successor_state)
+            enters_dead_end = not achieves_goal and (
+                reward_function.is_dead_end(successor_state, goal_condition) or
+                len(successor_state.generate_applicable_actions()) == 0
+            )
+            assert idx == len(action_sequence) - 1 or not (achieves_goal or enters_dead_end), "A trajectory cannot continue after reaching a terminal state."
+            if enters_dead_end:
+                normalized_rewards[idx] = RewardFunction.get_dead_end_reward()
         self.enters_dead_end = not self.achieves_goal and (
-            ((reward_sequence[-1] - 1e-6) <= RewardFunction.get_dead_end_reward()) or
+            reward_function.is_dead_end(state_sequence[-1], goal_condition) or
             (len(state_sequence[-1].generate_applicable_actions()) == 0)
         )
         self.reward_function = reward_function
@@ -62,8 +80,8 @@ class Trajectory:
             selected_action = action_sequence[idx]
             value = value_sequence[idx]
             q_value = q_value_sequence[idx]
-            reward = reward_sequence[idx]
-            future_rewards = sum(reward_sequence[idx + 1:])
+            reward = normalized_rewards[idx]
+            future_rewards = sum(normalized_rewards[idx + 1:])
             transition = Transition(current_state, successor_state, selected_action, value, q_value, reward, future_rewards, reward_function, goal_condition, self.achieves_goal)
             self.transitions.append(transition)
 
@@ -116,6 +134,8 @@ class Trajectory:
         """
         Validates the trajectory. Raises an AssertionError if any validation fails.
         """
+        if not self.transitions:
+            return
         last_transition = self.transitions[-1]
         if should_achieve_goal:
             goal_condition = last_transition.goal_condition
@@ -125,6 +145,7 @@ class Trajectory:
                 assert goal_condition.holds(last_transition.successor_state)
         for i in range(len(self.transitions) - 1):
             assert self.transitions[i].successor_state == self.transitions[i + 1].current_state
+            assert not self.transitions[i].is_terminal, "A trajectory cannot continue after reaching a terminal state."
         for transition in self.transitions:
             assert isinstance(transition, Transition)
             assert isinstance(transition.goal_condition, mm.GroundConjunctiveCondition)

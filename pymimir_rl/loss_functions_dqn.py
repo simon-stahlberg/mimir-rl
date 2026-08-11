@@ -125,5 +125,5 @@ class DQNOptimization(OptimizationFunction):
             batch_successor_q_values = self.target_model.forward(successor_state_goals)
             successor_max_values = torch.stack([self._mellowmax(q_values) if (q_values.numel() > 0) else torch.tensor(dead_end_value, dtype=torch.float, device=device) for q_values, _ in batch_successor_q_values])
             immediate_rewards = torch.tensor([transition.immediate_reward for transition in transitions], requires_grad=False, dtype=torch.float, device=device)
-            achieves_goal = torch.tensor([transition.achieves_goal for transition in transitions], dtype=torch.float, requires_grad=False, device=device)
-            return immediate_rewards + (1.0 - achieves_goal) * self.discount_factor * successor_max_values
+            is_terminal = torch.tensor([transition.is_terminal for transition in transitions], dtype=torch.float, requires_grad=False, device=device)
+            return immediate_rewards + (1.0 - is_terminal) * self.discount_factor * successor_max_values

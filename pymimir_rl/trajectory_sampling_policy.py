@@ -45,29 +45,44 @@ class PolicyRolloutSampler(TrajectorySampler):
         trajectory_states: list[TrajectoryState] = [TrajectoryState(initial_state, goal_condition) for initial_state, goal_condition in state_goals]
         for trajectory_state in trajectory_states:
             trajectory_state.state_sequence.append(trajectory_state.start_state)
+            if (not trajectory_state.solved and
+                    self.reward_function.is_dead_end(trajectory_state.start_state, trajectory_state.goal_condition)):
+                trajectory_state.done = True
         rollout_states = [self.RolloutContext(initial_state) for initial_state, _ in state_goals]
         return trajectory_states, rollout_states
 
     def _internal_sample(self, trajectory_states: list[TrajectoryState], internal_states: list[RolloutContext], max_steps: list[int]) -> None:
         with torch.no_grad():
             self.model.eval()
+            for trajectory_state, max_step in zip(trajectory_states, max_steps):
+                if not trajectory_state.done and len(trajectory_state.action_sequence) >= max_step:
+                    trajectory_state.done = True
             state_goals = [(context.state_sequence[-1], context.goal_condition) for context in trajectory_states if not context.done]
             context_indices = [idx for idx, context in enumerate(trajectory_states) if not context.done]
             if len(state_goals) > 0:
                 q_values_batch = self.model.forward(state_goals)
+                assert len(q_values_batch) == len(state_goals), "Model forward must return one result per input state."
                 for rollout_idx, (q_values, applicable_actions) in zip(context_indices, q_values_batch):
                     trajectory_state = trajectory_states[rollout_idx]
                     internal_state = internal_states[rollout_idx]
                     rewards: list[float] = []
                     q_values = q_values.cpu()  # Move the result to CPU, the remaining operations are very cheap.
+                    assert q_values.ndim == 1, "Policy rollout requires one scalar Q-value per action."
+                    assert q_values.numel() == len(applicable_actions), "Q-values and applicable actions must have equal lengths."
                     q_values_copy = q_values.clone()
                     current_state = trajectory_state.state_sequence[-1]
                     # Reduce the value actions leading to already visited states.
                     for action_idx, action in enumerate(applicable_actions):
                         successor_state = action.apply(current_state)
-                        rewards.append(self.reward_function(current_state, action, successor_state, trajectory_state.goal_condition))
+                        successor_is_goal = trajectory_state.goal_condition.holds(successor_state)
+                        successor_is_dead_end = (not successor_is_goal) and (
+                            len(successor_state.generate_applicable_actions()) == 0 or
+                            self.reward_function.is_dead_end(successor_state, trajectory_state.goal_condition)
+                        )
+                        rewards.append(RewardFunction.get_dead_end_reward() if successor_is_dead_end else self.reward_function(current_state, action, successor_state, trajectory_state.goal_condition))
                         if successor_state in internal_state.closed_set:
-                            q_values_copy[action_idx] = -1000000.0
+                            assert q_values_copy.is_floating_point(), "Policy rollout requires floating-point Q-values."
+                            q_values_copy[action_idx] = torch.finfo(q_values_copy.dtype).min
                     # Sample an action to apply.
                     assert q_values_copy.ndim > 0, "q-value tensor must be non-empty."
                     action_idx = self.sample_action_index(current_state, applicable_actions, q_values_copy)
@@ -75,9 +90,12 @@ class PolicyRolloutSampler(TrajectorySampler):
                     successor_state = action.apply(current_state)
                     q_value = q_values[action_idx].item()
                     reward = rewards[action_idx]
-                    value = (q_values + torch.tensor(rewards, dtype=torch.float, device=q_values.device)).max().item()
                     is_solved = trajectory_state.goal_condition.holds(successor_state)
-                    is_dead_end = len(successor_state.generate_applicable_actions()) == 0
+                    is_dead_end = (not is_solved) and (
+                        len(successor_state.generate_applicable_actions()) == 0 or
+                        self.reward_function.is_dead_end(successor_state, trajectory_state.goal_condition)
+                    )
+                    value = q_values.max().item()
                     exceeds_horizon = len(trajectory_state.state_sequence) >= max_steps[rollout_idx]
                     is_done = is_solved or is_dead_end or exceeds_horizon
                     # Update states.
@@ -95,6 +113,8 @@ class PolicyRolloutSampler(TrajectorySampler):
 
     def sample(self, initial_state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]], horizon: int) -> list[Trajectory]:
         """Generate trajectories for the given instances using the model."""
+        assert isinstance(horizon, int), "Horizon must be an integer."
+        assert horizon > 0, "Horizon must be positive."
         trajectory_states, rollout_states = self._initialize(initial_state_goals)
         max_steps = [horizon for _ in trajectory_states]
         while any(not trajectory_state.done for trajectory_state in trajectory_states):

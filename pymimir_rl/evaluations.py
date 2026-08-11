@@ -48,6 +48,8 @@ class LengthCriteria(EvaluationCriteria):
 
 
 class TDErrorCriteria(EvaluationCriteria):
+    """Evaluate undiscounted one-step TD consistency for trajectories with Q-valued predictions."""
+
     def __init__(self, only_solutions: bool = True) -> None:
         super().__init__()
         self.only_solutions = only_solutions
@@ -56,13 +58,15 @@ class TDErrorCriteria(EvaluationCriteria):
         total_error = 0.0
         for trajectory in trajectories:
             if not self.only_solutions or trajectory.is_solution():
-                for idx in range(len(trajectory) - 1):
-                    curr = trajectory[idx]
-                    succ = trajectory[idx + 1]
-                    q_curr = curr.predicted_q_value
-                    q_succ = succ.predicted_q_value + curr.immediate_reward
-                    total_error += abs(q_succ - q_curr)
-                total_error += abs(trajectory[-1].predicted_q_value)  # Terminal state should have Q-value 0.
+                for idx, transition in enumerate(trajectory):
+                    if transition.is_terminal:
+                        target = transition.immediate_reward
+                    elif idx + 1 < len(trajectory):
+                        target = transition.immediate_reward + trajectory[idx + 1].predicted_q_value
+                    else:
+                        # A truncated nonterminal trajectory has no successor estimate.
+                        continue
+                    total_error += abs(target - transition.predicted_q_value)
         return round(total_error)
 
     def compare(self, x: int, y: int) -> int:
@@ -111,7 +115,7 @@ class PolicyEvaluation:
         self.criterias = criterias
         self.trajectory_sampler = trajectory_sampler
         self.horizon = horizon
-        self.best_evaluation = None
+        self.best_evaluation: list[int] | None = None
 
     def evaluate(self) -> tuple[bool, list[int]]:
         """
@@ -179,7 +183,7 @@ class SequentialPolicyEvaluation:
         self.trajectory_sampler = trajectory_sampler
         self.horizon = horizon
         self.k = k
-        self.best_evaluation = None
+        self.best_evaluation: list[int] | None = None
 
     def evaluate(self) -> tuple[bool, list[int]]:
         """

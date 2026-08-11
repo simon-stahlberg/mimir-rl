@@ -150,8 +150,8 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
                 else:  # If there are no successor states, it's a dead end.
                     target_qvalues.append(torch.tensor(dead_end_value, device=device))
             immediate_rewards = torch.tensor([transition.immediate_reward for transition in transitions], requires_grad=False, dtype=torch.float, device=device)
-            achieves_goal = torch.tensor([transition.achieves_goal for transition in transitions], dtype=torch.float, requires_grad=False, device=device)
-            discounted_targets = immediate_rewards + (1.0 - achieves_goal) * self.discount_factor * torch.stack(target_qvalues)
+            is_terminal = torch.tensor([transition.is_terminal for transition in transitions], dtype=torch.float, requires_grad=False, device=device)
+            discounted_targets = immediate_rewards + (1.0 - is_terminal) * self.discount_factor * torch.stack(target_qvalues)
             return discounted_targets
 
     def _compute_critic_losses(self,

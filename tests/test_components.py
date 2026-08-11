@@ -3,6 +3,7 @@ from typing import Any, Callable, cast
 import pymimir as mm
 import pytest
 import torch
+import pymimir_rl.subtrajectory_sampling as subtrajectory_sampling_module
 
 from pathlib import Path
 from pymimir_rgnn import (
@@ -95,6 +96,9 @@ class FakeBeamState:
     def generate_applicable_actions(self) -> list['FakeBeamAction']:
         return self._actions
 
+    def get_problem(self) -> None:
+        return None
+
     def __hash__(self) -> int:
         return hash(self.name)
 
@@ -106,12 +110,16 @@ class FakeBeamState:
 
 
 class FakeBeamAction:
-    def __init__(self, name: str, successor_state: FakeBeamState) -> None:
+    def __init__(self, name: str, successor_state: FakeBeamState, reward: float = 0.0) -> None:
         self.name = name
         self.successor_state = successor_state
+        self.reward = reward
 
     def apply(self, state: FakeBeamState) -> FakeBeamState:
         return self.successor_state
+
+    def get_index(self) -> int:
+        return hash(self.name)
 
     def __repr__(self) -> str:
         return f"FakeBeamAction({self.name})"
@@ -130,9 +138,28 @@ class DummyBeamModel(ActionScalarModel):
         raise NotImplementedError("Beam internal tests do not call the model.")
 
 
+class FixedBeamModel(ActionScalarModel):
+    def __init__(self, action_values: list[float], dtype: torch.dtype = torch.float) -> None:
+        super().__init__()
+        self.action_values = torch.nn.Parameter(torch.tensor(action_values, dtype=dtype))
+
+    def forward(self, state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]]) -> list[tuple[torch.Tensor, list[mm.GroundAction]]]:
+        output: list[tuple[torch.Tensor, list[mm.GroundAction]]] = []
+        for state, _ in state_goals:
+            actions = state.generate_applicable_actions()
+            output.append((self.action_values[:len(actions)], actions))
+        return output
+
+
+class ShortBatchBeamModel(FixedBeamModel):
+    def forward(self, state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]]) -> list[tuple[torch.Tensor, list[mm.GroundAction]]]:
+        return super().forward(state_goals)[:-1]
+
+
 class DummyBeamRewardFunction(RewardFunction):
-    def __init__(self, constant: float) -> None:
+    def __init__(self, constant: float, dead_end_states: set[FakeBeamState] | None = None) -> None:
         self.constant = constant
+        self.dead_end_states = dead_end_states or set()
 
     def __call__(self,
                  current_state: mm.State,
@@ -140,6 +167,24 @@ class DummyBeamRewardFunction(RewardFunction):
                  successor_state: mm.State,
                  goal_condition: mm.GroundConjunctiveCondition) -> float:
         return self.constant
+
+    def is_dead_end(self, state: mm.State, goal_condition: mm.GroundConjunctiveCondition) -> bool:
+        return state in self.dead_end_states
+
+
+class ActionBeamRewardFunction(RewardFunction):
+    def __init__(self, dead_end_states: set[FakeBeamState] | None = None) -> None:
+        self.dead_end_states = dead_end_states or set()
+
+    def __call__(self,
+                 current_state: mm.State,
+                 action: mm.GroundAction,
+                 successor_state: mm.State,
+                 goal_condition: mm.GroundConjunctiveCondition) -> float:
+        return cast(Any, action).reward
+
+    def is_dead_end(self, state: mm.State, goal_condition: mm.GroundConjunctiveCondition) -> bool:
+        return state in self.dead_end_states
 
 
 def test_model_wrapper():
@@ -555,6 +600,340 @@ def test_iqn_target_uses_online_action_selection():
     assert torch.allclose(target_distributions[0], expected_distribution)
 
 
+def test_dead_end_targets_do_not_bootstrap():
+    current_state = FakeBeamState('current')
+    proven_dead_end = FakeBeamState('proven_dead_end')
+    stay = FakeBeamAction('stay', proven_dead_end)
+    selected_action = FakeBeamAction('to_proven_dead_end', proven_dead_end)
+    current_state.set_actions([selected_action])
+    proven_dead_end.set_actions([stay])
+    goal_condition = FakeBeamGoalCondition()
+    reward_function = DummyBeamRewardFunction(0.0, {proven_dead_end})
+    transition = Transition(cast(mm.State, current_state),
+                            cast(mm.State, proven_dead_end),
+                            cast(mm.GroundAction, selected_action),
+                            100.0,
+                            100.0,
+                            0.0,
+                            0.0,
+                            reward_function,
+                            cast(mm.GroundConjunctiveCondition, goal_condition),
+                            False)
+
+    assert transition.enters_dead_end
+    assert transition.is_terminal
+    assert transition.immediate_reward == RewardFunction.get_dead_end_reward()
+
+    scalar_model = FixedBeamModel([100.0])
+    scalar_optimizer = torch.optim.Adam(scalar_model.parameters())
+    scalar_scheduler = torch.optim.lr_scheduler.ConstantLR(scalar_optimizer)
+    dqn = DQNOptimization(scalar_model, scalar_optimizer, scalar_scheduler, scalar_model, 0.9, 1.0)
+    scalar_device = next(scalar_model.parameters()).device
+    dqn_target = dqn._compute_targets([transition], RewardFunction.get_dead_end_reward(), scalar_device)
+    assert torch.equal(dqn_target, torch.tensor([RewardFunction.get_dead_end_reward()], device=scalar_device))
+
+    iqn_model = DummyIQNWrapper([100.0])
+    iqn_target_model = DummyIQNWrapper([100.0])
+    iqn_optimizer = torch.optim.Adam(iqn_model.parameters())
+    iqn_scheduler = torch.optim.lr_scheduler.ConstantLR(iqn_optimizer)
+    iqn = IQNOptimization(iqn_model,
+                          iqn_optimizer,
+                          iqn_scheduler,
+                          iqn_target_model,
+                          0.9,
+                          num_quantiles=4,
+                          num_target_quantiles=4,
+                          num_selection_quantiles=4,
+                          use_bounds=False)
+    iqn_device = next(iqn_model.parameters()).device
+    iqn_target = iqn._compute_target_distributions([transition], iqn_device)[0]
+    assert torch.equal(iqn_target, torch.full((4,), RewardFunction.get_dead_end_reward(), device=iqn_device))
+
+    sac_policy = FixedBeamModel([100.0])
+    sac_qvalue_1 = FixedBeamModel([100.0])
+    sac_qvalue_2 = FixedBeamModel([100.0])
+    sac_policy_optimizer = torch.optim.Adam(sac_policy.parameters())
+    sac_qvalue_optimizer_1 = torch.optim.Adam(sac_qvalue_1.parameters())
+    sac_qvalue_optimizer_2 = torch.optim.Adam(sac_qvalue_2.parameters())
+    sac = DiscreteSoftActorCriticOptimization(
+        sac_policy,
+        sac_policy_optimizer,
+        torch.optim.lr_scheduler.ConstantLR(sac_policy_optimizer),
+        FixedBeamModel([100.0]),
+        sac_qvalue_1,
+        sac_qvalue_optimizer_1,
+        torch.optim.lr_scheduler.ConstantLR(sac_qvalue_optimizer_1),
+        FixedBeamModel([100.0]),
+        sac_qvalue_2,
+        sac_qvalue_optimizer_2,
+        torch.optim.lr_scheduler.ConstantLR(sac_qvalue_optimizer_2),
+        0.9,
+    )
+    sac_target = sac._compute_qvalue_targets([transition])
+    assert torch.equal(sac_target, torch.tensor([RewardFunction.get_dead_end_reward()]))
+
+    td3_policy = FixedBeamModel([100.0])
+    td3_qvalue_1 = FixedBeamModel([100.0])
+    td3_qvalue_2 = FixedBeamModel([100.0])
+    td3_policy_optimizer = torch.optim.Adam(td3_policy.parameters())
+    td3_qvalue_optimizer_1 = torch.optim.Adam(td3_qvalue_1.parameters())
+    td3_qvalue_optimizer_2 = torch.optim.Adam(td3_qvalue_2.parameters())
+    td3 = DiscreteTD3Optimization(
+        td3_policy,
+        td3_policy_optimizer,
+        torch.optim.lr_scheduler.ConstantLR(td3_policy_optimizer),
+        FixedBeamModel([100.0]),
+        FixedBeamModel([100.0]),
+        td3_qvalue_1,
+        td3_qvalue_optimizer_1,
+        torch.optim.lr_scheduler.ConstantLR(td3_qvalue_optimizer_1),
+        FixedBeamModel([100.0]),
+        td3_qvalue_2,
+        td3_qvalue_optimizer_2,
+        torch.optim.lr_scheduler.ConstantLR(td3_qvalue_optimizer_2),
+        0.9,
+    )
+    td3_target = td3._compute_qvalue_targets([transition])
+    assert torch.equal(td3_target, torch.tensor([RewardFunction.get_dead_end_reward()]))
+
+
+def test_trajectory_rejects_misaligned_value_sequences_when_empty():
+    domain = mm.Domain(DATA_DIR / 'gripper' / 'domain.pddl')
+    problem = mm.Problem(domain, DATA_DIR / 'gripper' / 'problem.pddl')
+    state = problem.get_initial_state()
+    goal_condition = problem.get_goal_condition()
+    reward_function = ConstantRewardFunction(-1.0)
+
+    with pytest.raises(AssertionError, match="value sequence"):
+        Trajectory([state], [], [1.0], [], [], reward_function, goal_condition)
+    with pytest.raises(AssertionError, match="Q-value sequence"):
+        Trajectory([state], [], [], [1.0], [], reward_function, goal_condition)
+
+
+def test_zero_transition_goal_trajectory_validates():
+    domain = mm.Domain(DATA_DIR / 'gripper' / 'domain.pddl')
+    problem = mm.Problem(domain, DATA_DIR / 'gripper' / 'problem.pddl')
+    state = problem.get_initial_state()
+    for action_name in (
+        '(pick ball2 rooma left)',
+        '(move rooma roomb)',
+        '(drop ball2 roomb left)',
+    ):
+        action = next(action for action in state.generate_applicable_actions() if str(action) == action_name)
+        state = action.apply(state)
+    goal_condition = problem.get_goal_condition()
+    assert goal_condition.holds(state)
+
+    trajectory = Trajectory(
+        [state],
+        [],
+        [],
+        [],
+        [],
+        ConstantRewardFunction(-1.0),
+        goal_condition,
+    )
+
+    assert trajectory.is_solution()
+    trajectory.validate()
+    assert TDErrorCriteria(False).evaluate([trajectory]) == 0
+
+
+def test_trajectory_rejects_suffix_after_explicit_dead_end():
+    domain = mm.Domain(DATA_DIR / 'gripper' / 'domain.pddl')
+    problem = mm.Problem(domain, DATA_DIR / 'gripper' / 'problem.pddl')
+    start = problem.get_initial_state()
+    to_dead_end = next(action for action in start.generate_applicable_actions()
+                       if str(action) == '(pick ball2 rooma left)')
+    dead_end = to_dead_end.apply(start)
+    after_dead_end = next(action for action in dead_end.generate_applicable_actions()
+                          if str(action) == '(move rooma roomb)')
+    tail = after_dead_end.apply(dead_end)
+    reward_function = DummyBeamRewardFunction(-1.0, cast(Any, {dead_end}))
+
+    with pytest.raises(AssertionError, match="cannot continue"):
+        Trajectory(
+            [start, dead_end, tail],
+            [to_dead_end, after_dead_end],
+            [0.0, 0.0],
+            [0.0, 0.0],
+            [-1.0, -1.0],
+            reward_function,
+            problem.get_goal_condition(),
+        )
+
+
+def test_iw_subtrajectory_does_not_continue_after_explicit_dead_end(monkeypatch: pytest.MonkeyPatch):
+    domain = mm.Domain(DATA_DIR / 'gripper' / 'domain.pddl')
+    problem = mm.Problem(domain, DATA_DIR / 'gripper' / 'problem.pddl')
+    start = problem.get_initial_state()
+    pick = next(action for action in start.generate_applicable_actions()
+                if str(action) == '(pick ball2 rooma left)')
+    dead_end = pick.apply(start)
+    move = next(action for action in dead_end.generate_applicable_actions()
+                if str(action) == '(move rooma roomb)')
+    after_dead_end = move.apply(dead_end)
+    drop = next(action for action in after_dead_end.generate_applicable_actions()
+                if str(action) == '(drop ball2 roomb left)')
+    goal = drop.apply(after_dead_end)
+
+    def fake_iw(*args: Any,
+                on_generate_state: Callable[..., None] | None = None,
+                on_generate_new_state: Callable[..., None] | None = None,
+                **kwargs: Any) -> None:
+        assert on_generate_state is not None
+        assert on_generate_new_state is not None
+        on_generate_state(start, pick, 0.0, dead_end)
+        on_generate_new_state(start, pick, 0.0, dead_end)
+        on_generate_state(dead_end, move, 0.0, after_dead_end)
+        on_generate_new_state(dead_end, move, 0.0, after_dead_end)
+        on_generate_state(after_dead_end, drop, 0.0, goal)
+        on_generate_new_state(after_dead_end, drop, 0.0, goal)
+
+    monkeypatch.setattr(mm, 'iw', fake_iw)
+    reward_function = DummyBeamRewardFunction(-1.0, cast(Any, {dead_end}))
+    sampler = IWSubtrajectorySampler(reward_function, 1)
+
+    assert sampler.sample(start, problem.get_goal_condition()) is None
+
+
+def test_iw_subtrajectory_preserves_live_route_to_shared_state(monkeypatch: pytest.MonkeyPatch):
+    start = FakeBeamState('start')
+    dead_end = FakeBeamState('dead_end')
+    live = FakeBeamState('live')
+    shared = FakeBeamState('shared')
+    to_dead_end = FakeBeamAction('to_dead_end', dead_end)
+    dead_to_shared = FakeBeamAction('dead_to_shared', shared)
+    to_live = FakeBeamAction('to_live', live)
+    live_to_shared = FakeBeamAction('live_to_shared', shared)
+    start.set_actions([to_dead_end, to_live])
+    dead_end.set_actions([dead_to_shared])
+    live.set_actions([live_to_shared])
+    shared.set_actions([FakeBeamAction('stay', shared)])
+
+    class EmptyGoalCondition(FakeBeamGoalCondition):
+        def __iter__(self):
+            return iter(())
+
+    goal_condition = EmptyGoalCondition()
+
+    def fake_iw(*args: Any,
+                on_generate_state: Callable[..., None] | None = None,
+                on_generate_new_state: Callable[..., None] | None = None,
+                **kwargs: Any) -> None:
+        assert on_generate_state is not None
+        assert on_generate_new_state is not None
+        generated_edges = [
+            (start, to_dead_end, dead_end, True),
+            (dead_end, dead_to_shared, shared, True),
+            (start, to_live, live, True),
+            (live, live_to_shared, shared, False),
+        ]
+        for current_state, action, successor_state, is_new in generated_edges:
+            on_generate_state(current_state, action, 0.0, successor_state)
+            if is_new:
+                on_generate_new_state(current_state, action, 0.0, successor_state)
+
+    captured: dict[str, Any] = {}
+
+    def capture_trajectory(state_sequence: list[FakeBeamState], action_sequence: list[FakeBeamAction], *args: Any) -> Any:
+        captured['states'] = state_sequence
+        captured['actions'] = action_sequence
+        return captured
+
+    monkeypatch.setattr(mm, 'iw', fake_iw)
+    monkeypatch.setattr(subtrajectory_sampling_module, 'Trajectory', capture_trajectory)
+    sampler = IWSubtrajectorySampler(ActionBeamRewardFunction({dead_end}), 1)
+    monkeypatch.setattr(sampler, '_get_goal_improvement',
+                        lambda candidate, achieved, unachieved: int(candidate == shared))
+
+    result = sampler.sample(cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition))
+
+    assert result is captured
+    assert captured['states'] == [start, live, shared]
+    assert captured['actions'] == [to_live, live_to_shared]
+
+
+def test_td_error_uses_immediate_reward_as_terminal_target():
+    domain = mm.Domain(DATA_DIR / 'gripper' / 'domain.pddl')
+    problem = mm.Problem(domain, DATA_DIR / 'gripper' / 'problem.pddl')
+    start = problem.get_initial_state()
+    action = next(action for action in start.generate_applicable_actions()
+                  if str(action) == '(pick ball2 rooma left)')
+    dead_end = action.apply(start)
+    reward_function = DummyBeamRewardFunction(0.0, cast(Any, {dead_end}))
+    trajectory = Trajectory(
+        [start, dead_end],
+        [action],
+        [RewardFunction.get_dead_end_reward()],
+        [RewardFunction.get_dead_end_reward()],
+        [0.0],
+        reward_function,
+        problem.get_goal_condition(),
+    )
+
+    assert trajectory[0].is_terminal
+    assert TDErrorCriteria(False).evaluate([trajectory]) == 0
+
+
+def test_actionless_dead_end_transition_normalizes_reward():
+    current_state = FakeBeamState('current')
+    dead_end = FakeBeamState('dead_end')
+    selected_action = FakeBeamAction('to_dead_end', dead_end)
+    current_state.set_actions([selected_action])
+    goal_condition = FakeBeamGoalCondition()
+    reward_function = DummyBeamRewardFunction(-1.0)
+    transition = Transition(cast(mm.State, current_state),
+                            cast(mm.State, dead_end),
+                            cast(mm.GroundAction, selected_action),
+                            0.0,
+                            0.0,
+                            -1.0,
+                            0.0,
+                            reward_function,
+                            cast(mm.GroundConjunctiveCondition, goal_condition),
+                            False)
+
+    assert transition.enters_dead_end
+    assert transition.is_terminal
+    assert transition.immediate_reward == RewardFunction.get_dead_end_reward()
+
+
+def test_dead_end_cost_does_not_imply_dead_end_state():
+    current_state = FakeBeamState('current')
+    live = FakeBeamState('live')
+    live.set_actions([FakeBeamAction('stay', live)])
+    selected_action = FakeBeamAction('to_live', live)
+    current_state.set_actions([selected_action])
+    goal_condition = FakeBeamGoalCondition()
+    reward_function = DummyBeamRewardFunction(RewardFunction.get_dead_end_reward())
+    transition = Transition(cast(mm.State, current_state),
+                            cast(mm.State, live),
+                            cast(mm.GroundAction, selected_action),
+                            0.0,
+                            0.0,
+                            RewardFunction.get_dead_end_reward(),
+                            0.0,
+                            reward_function,
+                            cast(mm.GroundConjunctiveCondition, goal_condition),
+                            False)
+
+    assert not transition.enters_dead_end
+    assert not transition.is_terminal
+    assert transition.immediate_reward == RewardFunction.get_dead_end_reward()
+
+
+def test_sum_reward_function_propagates_dead_end_proof():
+    dead_end = FakeBeamState('dead_end')
+    goal_condition = FakeBeamGoalCondition()
+    reward_function = SumRewardFunction([
+        DummyBeamRewardFunction(100.0, {dead_end}),
+        DummyBeamRewardFunction(20_000.0),
+    ])
+
+    assert reward_function.is_dead_end(cast(mm.State, dead_end), cast(mm.GroundConjunctiveCondition, goal_condition))
+
+
 def test_beam_search_finalize_handles_initial_dead_end():
     start = FakeBeamState('dead')
     start.set_actions([])
@@ -566,6 +945,305 @@ def test_beam_search_finalize_handles_initial_dead_end():
     assert trajectory_state.state_sequence == [start]
     assert trajectory_state.action_sequence == []
     assert trajectory_state.reward_sequence == []
+
+
+def test_beam_search_sample_handles_initial_dead_end():
+    domain_path = DATA_DIR / 'spanner' / 'domain.pddl'
+    problem_path = DATA_DIR / 'spanner' / 'problem.pddl'
+    domain = mm.Domain(domain_path)
+    problem = mm.Problem(domain, problem_path)
+    goal_condition = problem.get_goal_condition()
+    dead_end_state = problem.get_initial_state()
+    while len(dead_end_state.generate_applicable_actions()) > 0:
+        walk_actions = [action for action in dead_end_state.generate_applicable_actions() if str(action).startswith('(walk ')]
+        assert len(walk_actions) == 1
+        dead_end_state = walk_actions[0].apply(dead_end_state)
+
+    assert not goal_condition.holds(dead_end_state)
+    sampler = BeamSearchTrajectorySampler(DummyBeamModel(), ConstantRewardFunction(-1.0), 2)
+    trajectory = sampler.sample([(dead_end_state, goal_condition)], 5)[0]
+
+    assert len(trajectory) == 0
+    assert trajectory.start_state == dead_end_state
+    assert trajectory.final_state == dead_end_state
+    assert trajectory.is_unsolvable()
+    trajectory.validate()
+
+
+@pytest.mark.parametrize('max_beam_size', [0, -1])
+def test_beam_search_rejects_non_positive_beam_size(max_beam_size: int):
+    with pytest.raises(AssertionError):
+        BeamSearchTrajectorySampler(DummyBeamModel(), DummyBeamRewardFunction(-1.0), max_beam_size)
+
+
+def test_beam_search_rejects_non_integer_beam_size():
+    with pytest.raises(AssertionError):
+        BeamSearchTrajectorySampler(DummyBeamModel(), DummyBeamRewardFunction(-1.0), 1.5)  # type: ignore
+
+
+@pytest.mark.parametrize('horizon', [0, -1, 1.5])
+def test_beam_search_rejects_invalid_horizon(horizon: int | float):
+    sampler = BeamSearchTrajectorySampler(DummyBeamModel(), DummyBeamRewardFunction(-1.0), 1)
+    with pytest.raises(AssertionError):
+        sampler.sample([], horizon)  # type: ignore[arg-type]
+
+
+def test_beam_search_checks_horizon_before_expansion():
+    start = FakeBeamState('start')
+    successor = FakeBeamState('successor')
+    successor.set_actions([FakeBeamAction('stay', successor)])
+    action = FakeBeamAction('advance', successor)
+    start.set_actions([action])
+    goal_condition = FakeBeamGoalCondition()
+    sampler = BeamSearchTrajectorySampler(DummyBeamModel(), DummyBeamRewardFunction(0.0), 1)
+    trajectory_state = TrajectoryState(cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition))
+    search_state = sampler.SearchState(cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition))
+
+    sampler._internal_sample([trajectory_state], [search_state], [0])
+
+    assert trajectory_state.done
+    assert search_state.depth == 0
+    assert search_state.beam_list == [start]
+    assert successor not in search_state.transition_map
+
+
+def test_beam_search_rejects_misaligned_q_values_and_actions():
+    start = FakeBeamState('start')
+    successor = FakeBeamState('successor')
+    action = FakeBeamAction('advance', successor)
+    start.set_actions([action])
+    goal_condition = FakeBeamGoalCondition()
+    sampler = BeamSearchTrajectorySampler(DummyBeamModel(), DummyBeamRewardFunction(0.0), 1)
+    trajectory_state = TrajectoryState(cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition))
+    search_state = sampler.SearchState(cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition))
+
+    with pytest.raises(AssertionError, match="equal lengths"):
+        sampler._beam_step(trajectory_state,
+                           search_state,
+                           max_depth=1,
+                           beam_successor_values=[(torch.tensor([1.0, 2.0]), [cast(mm.GroundAction, action)])])
+
+
+def test_beam_search_rejects_incomplete_model_batch():
+    starts = [FakeBeamState('start_1'), FakeBeamState('start_2')]
+    goal_condition = FakeBeamGoalCondition()
+    for idx, start in enumerate(starts):
+        successor = FakeBeamState(f'successor_{idx}')
+        successor.set_actions([FakeBeamAction('stay', successor)])
+        start.set_actions([FakeBeamAction('advance', successor)])
+    sampler = BeamSearchTrajectorySampler(ShortBatchBeamModel([1.0]), DummyBeamRewardFunction(0.0), 1)
+    state_goals = [(cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition)) for start in starts]
+    trajectory_states, search_states = sampler._initialize(state_goals)
+
+    with pytest.raises(AssertionError, match="one result per input state"):
+        sampler._internal_sample(trajectory_states, search_states, [1, 1])
+
+
+def test_beam_search_ranks_goal_successor_by_q_value():
+    start = FakeBeamState('start')
+    goal = FakeBeamState('goal')
+    live = FakeBeamState('live')
+    live.set_actions([FakeBeamAction('stay', live)])
+    to_goal = FakeBeamAction('to_goal', goal)
+    to_live = FakeBeamAction('to_live', live)
+    start.set_actions([to_goal, to_live])
+    goal_condition = FakeBeamGoalCondition({goal})
+    sampler = BeamSearchTrajectorySampler(DummyBeamModel(), DummyBeamRewardFunction(0.0), 1)
+    trajectory_state = TrajectoryState(cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition))
+    search_state = sampler.SearchState(cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition))
+
+    sampler._beam_step(trajectory_state,
+                       search_state,
+                       max_depth=5,
+                       beam_successor_values=[(torch.tensor([-10.0, 10.0]), [cast(mm.GroundAction, to_goal), cast(mm.GroundAction, to_live)])])
+
+    assert not trajectory_state.solved
+    assert search_state.beam_list == [live]
+
+
+def test_beam_search_returns_goal_once_it_enters_beam():
+    start = FakeBeamState('start')
+    goal = FakeBeamState('goal')
+    live = FakeBeamState('live')
+    live.set_actions([FakeBeamAction('stay', live)])
+    to_goal = FakeBeamAction('to_goal', goal)
+    to_live = FakeBeamAction('to_live', live)
+    start.set_actions([to_goal, to_live])
+    goal_condition = FakeBeamGoalCondition({goal})
+    sampler = BeamSearchTrajectorySampler(DummyBeamModel(), DummyBeamRewardFunction(0.0), 2)
+    trajectory_state = TrajectoryState(cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition))
+    search_state = sampler.SearchState(cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition))
+
+    sampler._beam_step(trajectory_state,
+                       search_state,
+                       max_depth=5,
+                       beam_successor_values=[(torch.tensor([-10.0, 10.0]), [cast(mm.GroundAction, to_goal), cast(mm.GroundAction, to_live)])])
+    sampler._finalize_state(trajectory_state, search_state)
+
+    assert trajectory_state.solved
+    assert search_state.beam_list == [live, goal]
+    assert trajectory_state.state_sequence == [start, goal]
+
+
+def test_beam_search_follows_high_q_dead_end():
+    start = FakeBeamState('start')
+    dead_end = FakeBeamState('dead_end')
+    live = FakeBeamState('live')
+    live.set_actions([FakeBeamAction('stay', live)])
+    to_dead_end = FakeBeamAction('to_dead_end', dead_end)
+    to_live = FakeBeamAction('to_live', live)
+    start.set_actions([to_dead_end, to_live])
+    goal_condition = FakeBeamGoalCondition()
+    sampler = BeamSearchTrajectorySampler(DummyBeamModel(), DummyBeamRewardFunction(0.0), 1)
+    trajectory_state = TrajectoryState(cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition))
+    search_state = sampler.SearchState(cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition))
+
+    sampler._beam_step(trajectory_state,
+                       search_state,
+                       max_depth=5,
+                       beam_successor_values=[(torch.tensor([10.0, -10.0]), [cast(mm.GroundAction, to_dead_end), cast(mm.GroundAction, to_live)])])
+
+    sampler._finalize_state(trajectory_state, search_state)
+
+    assert trajectory_state.done
+    assert search_state.beam_list == [dead_end]
+    assert trajectory_state.state_sequence == [start, dead_end]
+    assert trajectory_state.reward_sequence == [RewardFunction.get_dead_end_reward()]
+
+
+def test_beam_search_forgets_dead_end_while_live_beam_remains():
+    start = FakeBeamState('start')
+    dead_end = FakeBeamState('dead_end')
+    live = FakeBeamState('live')
+    tail = FakeBeamState('tail')
+    to_dead_end = FakeBeamAction('to_dead_end', dead_end)
+    to_live = FakeBeamAction('to_live', live)
+    to_tail = FakeBeamAction('to_tail', tail)
+    start.set_actions([to_dead_end, to_live])
+    live.set_actions([to_tail])
+    tail.set_actions([FakeBeamAction('stay', tail)])
+    goal_condition = FakeBeamGoalCondition()
+    sampler = BeamSearchTrajectorySampler(DummyBeamModel(), DummyBeamRewardFunction(0.0), 2)
+    trajectory_state = TrajectoryState(cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition))
+    search_state = sampler.SearchState(cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition))
+
+    sampler._beam_step(trajectory_state,
+                       search_state,
+                       max_depth=2,
+                       beam_successor_values=[(torch.tensor([10.0, 9.0]), [cast(mm.GroundAction, to_dead_end), cast(mm.GroundAction, to_live)])])
+    assert not trajectory_state.done
+    assert search_state.beam_list == [dead_end, live]
+    assert search_state.open_list == [live]
+
+    sampler._beam_step(trajectory_state,
+                       search_state,
+                       max_depth=2,
+                       beam_successor_values=[(torch.tensor([8.0]), [cast(mm.GroundAction, to_tail)])])
+    sampler._finalize_state(trajectory_state, search_state)
+
+    assert search_state.beam_list == [tail]
+    assert trajectory_state.state_sequence == [start, live, tail]
+
+
+def test_beam_search_returns_live_branch_at_horizon_instead_of_dead_end():
+    start = FakeBeamState('start')
+    dead_end = FakeBeamState('dead_end')
+    live = FakeBeamState('live')
+    start.set_actions([
+        FakeBeamAction('to_dead_end', dead_end),
+        FakeBeamAction('to_live', live),
+    ])
+    live.set_actions([FakeBeamAction('stay', live)])
+    goal_condition = FakeBeamGoalCondition()
+    sampler = BeamSearchTrajectorySampler(DummyBeamModel(), DummyBeamRewardFunction(0.0), 2)
+    trajectory_state = TrajectoryState(cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition))
+    search_state = sampler.SearchState(cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition))
+
+    sampler._beam_step(
+        trajectory_state,
+        search_state,
+        max_depth=1,
+        beam_successor_values=[(
+            torch.tensor([10.0, 9.0]),
+            [cast(mm.GroundAction, start.generate_applicable_actions()[0]),
+             cast(mm.GroundAction, start.generate_applicable_actions()[1])],
+        )],
+    )
+    sampler._finalize_state(trajectory_state, search_state)
+
+    assert trajectory_state.done
+    assert search_state.beam_list == [dead_end, live]
+    assert search_state.open_list == [live]
+    assert trajectory_state.state_sequence == [start, live]
+
+
+def test_beam_search_terminates_safely_proven_dead_end():
+    start = FakeBeamState('start')
+    proven_dead_end = FakeBeamState('proven_dead_end')
+    live = FakeBeamState('live')
+    proven_dead_end.set_actions([FakeBeamAction('proven_stay', proven_dead_end)])
+    live.set_actions([FakeBeamAction('live_stay', live)])
+    to_proven_dead_end = FakeBeamAction('to_proven_dead_end', proven_dead_end, 0.0)
+    to_live = FakeBeamAction('to_live', live, 0.0)
+    start.set_actions([to_proven_dead_end, to_live])
+    goal_condition = FakeBeamGoalCondition()
+    sampler = BeamSearchTrajectorySampler(DummyBeamModel(), ActionBeamRewardFunction({proven_dead_end}), 1)
+    trajectory_state = TrajectoryState(cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition))
+    search_state = sampler.SearchState(cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition))
+
+    sampler._beam_step(trajectory_state,
+                       search_state,
+                       max_depth=5,
+                       beam_successor_values=[(torch.tensor([10.0, -10.0]), [cast(mm.GroundAction, to_proven_dead_end), cast(mm.GroundAction, to_live)])])
+    sampler._finalize_state(trajectory_state, search_state)
+
+    assert trajectory_state.done
+    assert search_state.beam_list == [proven_dead_end]
+    assert search_state.open_list == []
+    assert trajectory_state.state_sequence == [start, proven_dead_end]
+    assert trajectory_state.reward_sequence == [RewardFunction.get_dead_end_reward()]
+
+
+def test_beam_search_does_not_infer_dead_end_from_reward_value():
+    start = FakeBeamState('start')
+    live = FakeBeamState('live')
+    live.set_actions([FakeBeamAction('stay', live)])
+    action = FakeBeamAction('to_live', live)
+    start.set_actions([action])
+    goal_condition = FakeBeamGoalCondition()
+    sampler = BeamSearchTrajectorySampler(
+        DummyBeamModel(),
+        DummyBeamRewardFunction(RewardFunction.get_dead_end_reward()),
+        1,
+    )
+    trajectory_state = TrajectoryState(cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition))
+    search_state = sampler.SearchState(cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition))
+
+    sampler._beam_step(
+        trajectory_state,
+        search_state,
+        max_depth=5,
+        beam_successor_values=[(torch.tensor([5.0]), [cast(mm.GroundAction, action)])],
+    )
+
+    assert not trajectory_state.done
+    assert search_state.open_list == [live]
+
+
+def test_beam_search_recognizes_safely_proven_initial_dead_end():
+    start = FakeBeamState('start')
+    start.set_actions([FakeBeamAction('stay', start)])
+    goal_condition = FakeBeamGoalCondition()
+    reward_function = DummyBeamRewardFunction(0.0, {start})
+    sampler = BeamSearchTrajectorySampler(DummyBeamModel(), reward_function, 1)
+
+    trajectory_states, search_states = sampler._initialize([
+        (cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition)),
+    ])
+
+    assert trajectory_states[0].done
+    assert not trajectory_states[0].solved
+    assert search_states[0].open_list == []
 
 
 def test_beam_search_keeps_dead_end_successor_in_final_trajectory():
@@ -584,9 +1262,9 @@ def test_beam_search_keeps_dead_end_successor_in_final_trajectory():
     assert trajectory_state.done
     assert trajectory_state.state_sequence == [start, dead_end]
     assert trajectory_state.action_sequence == [action]
-    assert trajectory_state.reward_sequence == [-1.0]
+    assert trajectory_state.reward_sequence == [RewardFunction.get_dead_end_reward()]
     assert trajectory_state.q_value_sequence == [7.0]
-    assert trajectory_state.value_sequence == [6.0]
+    assert trajectory_state.value_sequence == [7.0]
 
 
 def test_beam_search_keeps_best_duplicate_successor():
@@ -641,6 +1319,124 @@ def test_beam_search_does_not_collapse_to_revisited_state():
     assert trajectory_state.state_sequence == [start, middle]
     assert trajectory_state.action_sequence == [action_to_middle]
     assert trajectory_state.reward_sequence == [0.0]
+
+
+def test_policy_rollout_records_max_q_as_state_value():
+    start = FakeBeamState('start')
+    successor_1 = FakeBeamState('successor_1')
+    successor_2 = FakeBeamState('successor_2')
+    successor_1.set_actions([FakeBeamAction('stay_1', successor_1)])
+    successor_2.set_actions([FakeBeamAction('stay_2', successor_2)])
+    action_1 = FakeBeamAction('action_1', successor_1, 0.0)
+    action_2 = FakeBeamAction('action_2', successor_2, 100.0)
+    start.set_actions([action_1, action_2])
+    goal_condition = FakeBeamGoalCondition()
+    sampler = GreedyPolicyTrajectorySampler(FixedBeamModel([5.0, 4.0]), ActionBeamRewardFunction())
+    trajectory_states, rollout_states = sampler._initialize([
+        (cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition)),
+    ])
+
+    sampler._internal_sample(trajectory_states, rollout_states, [5])
+
+    assert trajectory_states[0].value_sequence == [5.0]
+    assert trajectory_states[0].action_sequence == [action_1]
+
+
+def test_policy_rollout_revisit_mask_supports_float16():
+    start = FakeBeamState('start')
+    stay = FakeBeamAction('stay', start)
+    start.set_actions([stay])
+    goal_condition = FakeBeamGoalCondition()
+    sampler = GreedyPolicyTrajectorySampler(
+        FixedBeamModel([0.0], dtype=torch.float16),
+        DummyBeamRewardFunction(0.0),
+    )
+    trajectory_states, rollout_states = sampler._initialize([
+        (cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition)),
+    ])
+
+    sampler._internal_sample(trajectory_states, rollout_states, [1])
+
+    assert trajectory_states[0].action_sequence == [stay]
+
+
+def test_policy_rollout_revisit_mask_uses_dtype_minimum_instead_of_fixed_floor():
+    start = FakeBeamState('start')
+    live = FakeBeamState('live')
+    stay = FakeBeamAction('stay', start)
+    advance = FakeBeamAction('advance', live)
+    start.set_actions([stay, advance])
+    live.set_actions([FakeBeamAction('live_stay', live)])
+    goal_condition = FakeBeamGoalCondition()
+    sampler = GreedyPolicyTrajectorySampler(
+        FixedBeamModel([0.0, -2_000_000.0]),
+        DummyBeamRewardFunction(0.0),
+    )
+    trajectory_states, rollout_states = sampler._initialize([
+        (cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition)),
+    ])
+
+    sampler._internal_sample(trajectory_states, rollout_states, [1])
+
+    assert trajectory_states[0].action_sequence == [advance]
+
+
+def test_policy_rollout_terminates_explicit_dead_end_with_dead_end_cost():
+    start = FakeBeamState('start')
+    dead_end = FakeBeamState('dead_end')
+    dead_end.set_actions([FakeBeamAction('stay', dead_end)])
+    action = FakeBeamAction('to_dead_end', dead_end, 25.0)
+    start.set_actions([action])
+    goal_condition = FakeBeamGoalCondition()
+    reward_function = ActionBeamRewardFunction({dead_end})
+    sampler = GreedyPolicyTrajectorySampler(FixedBeamModel([5.0]), reward_function)
+    trajectory_states, rollout_states = sampler._initialize([
+        (cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition)),
+    ])
+
+    sampler._internal_sample(trajectory_states, rollout_states, [5])
+
+    assert trajectory_states[0].done
+    assert not trajectory_states[0].solved
+    assert trajectory_states[0].action_sequence == [action]
+    assert trajectory_states[0].reward_sequence == [RewardFunction.get_dead_end_reward()]
+
+
+def test_policy_rollout_handles_explicit_initial_dead_end():
+    domain = mm.Domain(DATA_DIR / 'gripper' / 'domain.pddl')
+    problem = mm.Problem(domain, DATA_DIR / 'gripper' / 'problem.pddl')
+    start = problem.get_initial_state()
+    reward_function = DummyBeamRewardFunction(0.0, cast(Any, {start}))
+    sampler = GreedyPolicyTrajectorySampler(DummyBeamModel(), reward_function)
+
+    trajectory = sampler.sample([(start, problem.get_goal_condition())], 5)[0]
+
+    assert len(trajectory) == 0
+    assert trajectory.is_unsolvable()
+    trajectory.validate()
+
+
+@pytest.mark.parametrize('horizon', [0, -1, 1.5])
+def test_policy_rollout_rejects_invalid_horizon(horizon: int | float):
+    sampler = GreedyPolicyTrajectorySampler(DummyBeamModel(), DummyBeamRewardFunction(0.0))
+    with pytest.raises(AssertionError):
+        sampler.sample([], horizon)  # type: ignore[arg-type]
+
+
+def test_policy_rollout_checks_horizon_before_model_evaluation():
+    start = FakeBeamState('start')
+    successor = FakeBeamState('successor')
+    start.set_actions([FakeBeamAction('advance', successor)])
+    goal_condition = FakeBeamGoalCondition()
+    sampler = GreedyPolicyTrajectorySampler(DummyBeamModel(), DummyBeamRewardFunction(0.0))
+    trajectory_states, rollout_states = sampler._initialize([
+        (cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition)),
+    ])
+
+    sampler._internal_sample(trajectory_states, rollout_states, [0])
+
+    assert trajectory_states[0].done
+    assert trajectory_states[0].action_sequence == []
 
 
 def test_ff_reward_function():
@@ -737,6 +1533,16 @@ def test_trajectory_sampler_multiple(domain_name: str):
     assert isinstance(trajectory, Trajectory)
     assert trajectory.is_solution() or len(trajectory) <= 10
     trajectory.validate()  # Performs asserts internally.
+
+
+@pytest.mark.parametrize('horizon', [0, -1, 1.5])
+def test_multiple_trajectory_sampler_rejects_invalid_horizon(horizon: int | float):
+    reward_function = DummyBeamRewardFunction(0.0)
+    child_sampler = GreedyPolicyTrajectorySampler(DummyBeamModel(), reward_function)
+    sampler = MultipleTrajectorySampler(reward_function, [child_sampler], [1.0])
+
+    with pytest.raises(AssertionError):
+        sampler.sample([], horizon)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("domain_name", ['blocks-hard', 'gripper-hard'])
@@ -925,6 +1731,39 @@ def test_value_based_initial_state_sampler():
             initial_state_sampler.add_state(transition.current_state, transition.predicted_value)
     sampled_initial_states_2 = initial_state_sampler.sample(problems)
     assert len(sampled_initial_states_2) == len(problems)
+
+
+def test_value_based_initial_state_sampler_uses_raw_q_and_terminal_state_values():
+    domain = mm.Domain(DATA_DIR / 'gripper' / 'domain.pddl')
+    problem = mm.Problem(domain, DATA_DIR / 'gripper' / 'problem.pddl')
+    initial_state = problem.get_initial_state()
+    to_dead_end = next(action for action in initial_state.generate_applicable_actions()
+                       if str(action) == '(pick ball1 rooma left)')
+    explicit_dead_end = to_dead_end.apply(initial_state)
+
+    goal_state = initial_state
+    for action_name in (
+        '(pick ball2 rooma left)',
+        '(move rooma roomb)',
+        '(drop ball2 roomb left)',
+    ):
+        action = next(action for action in goal_state.generate_applicable_actions() if str(action) == action_name)
+        goal_state = action.apply(goal_state)
+    assert problem.get_goal_condition().holds(goal_state)
+
+    model = FixedBeamModel([5.0, 4.0] + [0.0] * 14)
+    reward_function = DummyBeamRewardFunction(20_000.0, cast(Any, {explicit_dead_end}))
+    sampler = TopValueInitialStateSampler([problem], model, reward_function, 0.0, 1.0, 10)
+    sampler.state_buffers[problem] = [initial_state, explicit_dead_end, goal_state]
+    sampler.value_buffers[problem] = [float('nan')] * 3
+
+    sampler._update_state_values(problem)
+
+    assert sampler.value_buffers[problem] == [
+        5.0,
+        RewardFunction.get_dead_end_reward(),
+        0.0,
+    ]
 
 
 def test_evaluation():

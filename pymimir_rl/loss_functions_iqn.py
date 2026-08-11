@@ -142,7 +142,7 @@ class IQNOptimization(OptimizationFunction):
                 target_dist = qs_prime[best_action_idx]
 
             reward = transition.immediate_reward
-            is_terminal = 1.0 if transition.achieves_goal else 0.0
+            is_terminal = 1.0 if transition.is_terminal else 0.0
             updated_dist = reward + self.discount_factor * (1.0 - is_terminal) * target_dist
 
             # Apply Bounds Clipping (Crucial for Planning)

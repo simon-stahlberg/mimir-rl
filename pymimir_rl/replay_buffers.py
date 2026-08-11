@@ -97,7 +97,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             reward (float): The reward received. next_state (np.array): The next
             state. done (bool): Whether the episode ended.
         """
-        max_priority = self.priorities.max() if self.buffer else 1.0  # New transitions get max priority
+        max_priority = float(self.priorities.max().item()) if self.buffer else 1.0  # New transitions get max priority
         if len(self.buffer) < self.capacity:
             self.buffer.append(transition)
         else:

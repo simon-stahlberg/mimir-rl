@@ -67,11 +67,21 @@ class TopValueInitialStateSampler(InitialStateSampler):
             goal_condition = problem.get_goal_condition()
             state_goals = [(state, goal_condition) for state in states]
             qvalues_actions_list = self.model.forward(state_goals)
-            rewards_list: list[torch.Tensor] = []
-            for state, (_, actions) in zip(states, qvalues_actions_list):
-                rewards = torch.tensor([self.reward_function(state, action, action.apply(state), goal_condition) for action in actions], dtype=torch.float, device=device)
-                rewards_list.append(rewards)
-            new_values = torch.stack([(q_values + rewards).max() for (q_values, _), rewards in zip(qvalues_actions_list, rewards_list)])
+            assert len(qvalues_actions_list) == len(states), "Model forward must return one result per input state."
+            new_value_list: list[torch.Tensor] = []
+            for state, (q_values, actions) in zip(states, qvalues_actions_list):
+                assert q_values.ndim == 1, "Initial-state sampling requires one scalar Q-value per action."
+                assert q_values.numel() == len(actions), "Q-values and applicable actions must have equal lengths."
+                if goal_condition.holds(state):
+                    value = torch.tensor(0.0, dtype=torch.float, device=device)
+                elif (len(state.generate_applicable_actions()) == 0 or
+                      self.reward_function.is_dead_end(state, goal_condition)):
+                    value = torch.tensor(RewardFunction.get_dead_end_reward(), dtype=torch.float, device=device)
+                else:
+                    assert q_values.numel() > 0, "A live state must have at least one applicable action."
+                    value = q_values.max()
+                new_value_list.append(value)
+            new_values = torch.stack(new_value_list)
             assert len(values) == new_values.numel()
             for idx in range(len(values)):
                 values[idx] = new_values[idx].item()

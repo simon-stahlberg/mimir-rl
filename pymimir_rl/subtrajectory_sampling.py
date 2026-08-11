@@ -2,6 +2,7 @@ import pymimir as mm
 import random
 
 from abc import ABC, abstractmethod
+from collections import defaultdict, deque
 
 from .reward_functions import RewardFunction
 from .trajectories import Trajectory
@@ -40,23 +41,51 @@ class IWSubtrajectorySampler(SubtrajectorySampler):
         return improvement
 
     def sample(self, state: mm.State, goal_condition: mm.GroundConjunctiveCondition) -> Trajectory | None:
+        def is_terminal(candidate_state: mm.State) -> bool:
+            return (goal_condition.holds(candidate_state) or
+                    self.reward_function.is_dead_end(candidate_state, goal_condition) or
+                    len(candidate_state.generate_applicable_actions()) == 0)
+
+        if is_terminal(state):
+            return None
+
         achieved_goal_condition: list[mm.GroundLiteral] = []
         unachieved_goal_condition: list[mm.GroundLiteral] = []
         for literal in goal_condition:
             if isinstance(literal, mm.GroundLiteral):
                 if (state.literal_holds(literal)): achieved_goal_condition.append(literal)
                 else: unachieved_goal_condition.append(literal)
-        # Construct the search space graph.
+        # Collect every generated edge, but retain only states accepted by IW. Rebuilding the
+        # graph afterwards preserves legal alternate parents without admitting novelty-pruned states.
+        generated_edges: defaultdict[mm.State, list[tuple[mm.GroundAction, mm.State]]] = defaultdict(list)
+        accepted_states: set[mm.State] = {state}
+
+        def collect_transition(current_state: mm.State, action: mm.GroundAction, _: float, successor_state: mm.State) -> None:
+            generated_edges[current_state].append((action, successor_state))
+
+        def collect_accepted_state(_: mm.State, __: mm.GroundAction, ___: float, successor_state: mm.State) -> None:
+            accepted_states.add(successor_state)
+
+        mm.iw(state.get_problem(),
+              state,
+              self.width,
+              on_generate_state=collect_transition,
+              on_generate_new_state=collect_accepted_state)
+
+        # Construct the shortest-path graph without ever expanding an application-level terminal.
         predecessors: dict[mm.State, tuple[mm.GroundAction, mm.State]] = {}
         distances: dict[mm.State, int] = {state: 0}
-        def add_transition(current_state: mm.State, action: mm.GroundAction, _: float, successor_state: mm.State) -> None:
-            nonlocal predecessors, distances
-            current_distance = distances[current_state]
-            successor_distance = current_distance + 1
-            if (successor_state not in distances) or (successor_distance < distances[successor_state]):
-                distances[successor_state] = successor_distance
+        queue: deque[mm.State] = deque([state])
+        while len(queue) > 0:
+            current_state = queue.popleft()
+            if is_terminal(current_state):
+                continue
+            for action, successor_state in generated_edges[current_state]:
+                if successor_state not in accepted_states or successor_state in distances:
+                    continue
+                distances[successor_state] = distances[current_state] + 1
                 predecessors[successor_state] = (action, current_state)
-        mm.iw(state.get_problem(), state, self.width, on_generate_new_state=add_transition)
+                queue.append(successor_state)
         # Identify destination candidates.
         # We prioritize large overlaps and then short distances.
         best_improvement: int = 0

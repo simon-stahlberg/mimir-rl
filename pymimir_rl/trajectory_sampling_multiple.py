@@ -107,6 +107,8 @@ class MultipleTrajectorySampler(TrajectorySampler):
         self.probabilities = [p / total_unnormalized for p in unnormalized_probabilities]
 
     def sample(self, initial_state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]], horizon: int) -> list[Trajectory]:
+        assert isinstance(horizon, int), "Horizon must be an integer."
+        assert horizon > 0, "Horizon must be positive."
         trajectory_states, internal_states = self._initialize(initial_state_goals)
         max_steps = [horizon for _ in trajectory_states]
         while any(not trajectory_state.done for trajectory_state in trajectory_states):

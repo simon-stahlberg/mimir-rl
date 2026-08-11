@@ -141,9 +141,8 @@ class DiscreteTD3Optimization(OptimizationFunction):
                     target_qvalues.append(torch.tensor(dead_end_value, device=device, dtype=torch.float))
 
             immediate_rewards = torch.tensor([t.immediate_reward for t in transitions], device=device, dtype=torch.float)
-            achieves_goal = torch.tensor([t.achieves_goal for t in transitions], device=device, dtype=torch.float)
-
-            discounted_targets = immediate_rewards + (1.0 - achieves_goal) * self.discount_factor * torch.stack(target_qvalues)
+            is_terminal = torch.tensor([t.is_terminal for t in transitions], device=device, dtype=torch.float)
+            discounted_targets = immediate_rewards + (1.0 - is_terminal) * self.discount_factor * torch.stack(target_qvalues)
             return discounted_targets
 
     def _compute_critic_losses(self,
