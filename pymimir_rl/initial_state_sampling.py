@@ -32,7 +32,7 @@ class OriginalInitialStateSampler(InitialStateSampler):
     """
 
     def sample(self, problems: list[mm.Problem]) -> list[mm.State]:
-        return [problem.get_initial_state() for problem in problems]
+        return [problem.initial_state for problem in problems]
 
 
 class TopValueInitialStateSampler(InitialStateSampler):
@@ -54,7 +54,7 @@ class TopValueInitialStateSampler(InitialStateSampler):
         self.sample_original_probability = sample_original_probability
         self.temperature = temperature
         self.max_buffer_size = max_buffer_size
-        self.state_buffers: dict[mm.Problem, list[mm.State]] = {problem: [problem.get_initial_state()] for problem in problems}
+        self.state_buffers: dict[mm.Problem, list[mm.State]] = {problem: [problem.initial_state] for problem in problems}
         self.value_buffers: dict[mm.Problem, list[float]] = {problem: [0.0] for problem in problems}
 
     def _update_state_values(self, problem: mm.Problem) -> None:
@@ -64,7 +64,7 @@ class TopValueInitialStateSampler(InitialStateSampler):
             device = next(self.model.parameters()).device
             states = self.state_buffers[problem]
             values = self.value_buffers[problem]
-            goal_condition = problem.get_goal_condition()
+            goal_condition = problem.goal
             state_goals = [(state, goal_condition) for state in states]
             qvalues_actions_list = self.model.forward(state_goals)
             assert len(qvalues_actions_list) == len(states), "Model forward must return one result per input state."
@@ -74,7 +74,7 @@ class TopValueInitialStateSampler(InitialStateSampler):
                 assert q_values.numel() == len(actions), "Q-values and applicable actions must have equal lengths."
                 if goal_condition.holds(state):
                     value = torch.tensor(0.0, dtype=torch.float, device=device)
-                elif (len(state.generate_applicable_actions()) == 0 or
+                elif (len(state.applicable_actions()) == 0 or
                       self.reward_function.is_dead_end(state, goal_condition)):
                     value = torch.tensor(RewardFunction.get_dead_end_reward(), dtype=torch.float, device=device)
                 else:
@@ -89,8 +89,8 @@ class TopValueInitialStateSampler(InitialStateSampler):
     def add_state(self, state: mm.State, value: float) -> None:
         def argmin(xs: list[float]) -> int:
             return min(range(len(xs)), key=lambda x: xs[x])
-        states = self.state_buffers[state.get_problem()]
-        values = self.value_buffers[state.get_problem()]
+        states = self.state_buffers[state.problem]
+        values = self.value_buffers[state.problem]
         if len(values) >= self.max_buffer_size:
             replace_idx = argmin(values)
             replace_value = values[replace_idx]
@@ -107,7 +107,7 @@ class TopValueInitialStateSampler(InitialStateSampler):
         for problem in problems:
             sample_original_initial_state = torch.rand(1).item() < self.sample_original_probability
             if sample_original_initial_state:
-                sampled_initial_states.append(problem.get_initial_state())
+                sampled_initial_states.append(problem.initial_state)
             else:
                 if problem not in updated_problems:
                     self._update_state_values(problem)

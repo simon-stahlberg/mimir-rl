@@ -53,17 +53,17 @@ class PartialStateHindsightTrajectoryRefiner(TrajectoryRefiner):
             else:
                 problem = trajectory.problem
                 if self.remove_non_goal_predicates:
-                    whitelist_predicates = set(literal.get_atom().get_predicate() for literal in problem.get_goal_condition() if isinstance(literal, mm.GroundLiteral))
+                    whitelist_predicates = set(literal.atom.predicate for literal in problem.goal)
                 else:
-                    whitelist_predicates = set(problem.get_domain().get_predicates())
+                    whitelist_predicates = set(problem.domain.predicates)
                 end_index = len(trajectory) - 1
                 while end_index >= 0:
-                    goal_atoms = [atom for atom in trajectory[end_index].successor_state.get_atoms() if atom.get_predicate() in whitelist_predicates]
+                    goal_atoms = [atom for atom in trajectory[end_index].successor_state.atoms if atom.predicate in whitelist_predicates]
                     if len(goal_atoms) > 0:
                         goal_size = random.randint(1, len(goal_atoms))
                         goal_atoms = random.sample(goal_atoms, goal_size)
-                        goal_literals = [mm.GroundLiteral.new(atom, True, problem) for atom in goal_atoms]
-                        goal_condition = mm.GroundConjunctiveCondition.new(goal_literals, problem)
+                        goal_literals = [problem.ground_literal(atom) for atom in goal_atoms]
+                        goal_condition = problem.ground_condition(*goal_literals)
                         closed_set: set[mm.State] = set()
                         start_index = end_index
                         while start_index >= 0:
@@ -94,9 +94,9 @@ class StateHindsightTrajectoryRefiner(TrajectoryRefiner):
             else:
                 end_index = len(trajectory) - 1
                 while end_index >= 0:
-                    goal_atoms = trajectory[end_index].successor_state.get_atoms()
-                    goal_literals = [mm.GroundLiteral.new(atom, True, trajectory.problem) for atom in goal_atoms]
-                    goal_condition = mm.GroundConjunctiveCondition.new(goal_literals, trajectory.problem)
+                    goal_atoms = trajectory[end_index].successor_state.atoms
+                    goal_literals = [trajectory.problem.ground_literal(atom) for atom in goal_atoms]
+                    goal_condition = trajectory.problem.ground_condition(*goal_literals)
                     closed_set: set[mm.State] = set()
                     start_index = end_index
                     while start_index >= 0:
@@ -119,14 +119,14 @@ class PropositionalHindsightTrajectoryRefiner(TrajectoryRefiner):
         self.max_generated = max_generated
         self.problem_subgoals: dict[mm.Problem, list[mm.GroundConjunctiveCondition]] = {}
         for problem in problems:
-            goal_condition = problem.get_goal_condition()
-            goal_literals: list[mm.GroundLiteral] = list(goal_condition)  # type: ignore
+            goal_condition = problem.goal
+            goal_literals = list(goal_condition)
             # Enumerate all possible combinations of goal_atoms
             subgoals: list[mm.GroundConjunctiveCondition] = []
             for size in range(1, len(goal_literals) + 1):
                 list_of_subgoal_literals = itertools.islice(itertools.combinations(goal_literals, size), 100)
                 for subgoal_literals in list_of_subgoal_literals:
-                    subgoal = mm.GroundConjunctiveCondition.new(list(subgoal_literals), problem)
+                    subgoal = problem.ground_condition(*subgoal_literals)
                     subgoals.append(subgoal)
             subgoals.sort(key=len, reverse=True)
             self.problem_subgoals[problem] = subgoals
@@ -168,22 +168,18 @@ class LiftedHindsightTrajectoryRefiner(TrajectoryRefiner):
         self.problem_subgoals: dict[mm.Problem, list[mm.ConjunctiveCondition]] = {}
         self.problem_blacklist: dict[mm.Problem, list[mm.Predicate]] = {}
         for problem in problems:
-            domain = problem.get_domain()
+            domain = problem.domain
             subgoals: list[mm.ConjunctiveCondition] = []
-            blacklist = [domain.get_predicate('=')] if domain.has_predicate('=') else []
+            blacklist = [domain.predicate('=')] if domain.has_predicate('=') else []
             grounded_subgoals = self._generate_grounded_subgoals(problem)
             for subgoal_size in sorted(grounded_subgoals.keys(), reverse=True):
                 selected_subgoals = grounded_subgoals[subgoal_size][:max_subgoals_per_size]
-                subgoals.extend([subgoal.lift(True) for subgoal in selected_subgoals])
-            # Warmup, ground() initializes the generator.
-            initial_state = problem.get_initial_state()
-            for subgoal in subgoals:
-                subgoal.ground(initial_state, 1)
+                subgoals.extend([subgoal.lift(add_inequalities=True) for subgoal in selected_subgoals])
             self.problem_subgoals[problem] = subgoals
             self.problem_blacklist[problem] = blacklist
 
     def _generate_grounded_subgoals(self, problem: mm.Problem) -> dict[int, list[mm.GroundConjunctiveCondition]]:
-        goal_literals: list[mm.GroundLiteral] = list(problem.get_goal_condition())  # type: ignore
+        goal_literals = list(problem.goal)
         goal_graph = nx.Graph()
         # Add nodes.
         for idx_i in list(range(len(goal_literals))):
@@ -191,8 +187,8 @@ class LiftedHindsightTrajectoryRefiner(TrajectoryRefiner):
         # Add edges.
         for idx_i in range(len(goal_literals)):
             for idx_j in range(idx_i + 1, len(goal_literals)):
-                objs_i = goal_literals[idx_i].get_atom().get_terms()
-                objs_j = goal_literals[idx_j].get_atom().get_terms()
+                objs_i = goal_literals[idx_i].atom.objects
+                objs_j = goal_literals[idx_j].atom.objects
                 if any(o in objs_j for o in objs_i):
                     goal_graph.add_edge(idx_i, idx_j)  # type: ignore
         # Enumerate all connected subcomponents.
@@ -223,13 +219,26 @@ class LiftedHindsightTrajectoryRefiner(TrajectoryRefiner):
                 sampled_subgraphs.extend([sum(combination, ()) for combination in itertools.islice(itertools.product(*sampled_subcomponents), MAX_COMBINATION_SAMPLES)])  # type: ignore
         # Convert the combinations to actual grounded subgoals.
         all_subgoals = [
-            mm.GroundConjunctiveCondition.new([goal_literals[i] for i in subgraph], problem)  # type: ignore
+            problem.ground_condition(*(goal_literals[i] for i in subgraph))  # type: ignore
             for subgraph in sampled_subgraphs if len(subgraph) <= MAX_SUBGOAL_SIZE  # type: ignore
         ]
         subgoals_by_size = defaultdict(list)  # type: ignore
         for subgoal in all_subgoals:
             subgoals_by_size[len(subgoal)].append(subgoal)  # type: ignore
         return subgoals_by_size  # type: ignore
+
+    @staticmethod
+    def _ground_condition(
+        condition: mm.ConjunctiveCondition,
+        state: mm.State,
+        blacklist: list[mm.Predicate],
+    ) -> mm.GroundConjunctiveCondition | None:
+        groundings = condition.groundings(
+            state,
+            limit=1,
+            omit_predicates=blacklist,
+        )
+        return groundings[0] if groundings else None
 
     def refine(self, trajectories: list[Trajectory]) -> list[Trajectory]:
         refined_trajectories: list[Trajectory] = []
@@ -240,9 +249,12 @@ class LiftedHindsightTrajectoryRefiner(TrajectoryRefiner):
             end_index = len(trajectory) - 1
             while end_index >= 0:
                 for lifted_subgoal in subgoals:
-                    grounded_subgoals = lifted_subgoal.ground(trajectory[end_index].successor_state, 1, blacklist)
-                    if len(grounded_subgoals) > 0:
-                        grounded_subgoal =  grounded_subgoals[0]  # We only ask for one binding.
+                    grounded_subgoal = self._ground_condition(
+                        lifted_subgoal,
+                        trajectory[end_index].successor_state,
+                        blacklist,
+                    )
+                    if grounded_subgoal is not None:
                         closed_set: set[mm.State] = set()
                         start_index = end_index
                         while start_index >= 0:

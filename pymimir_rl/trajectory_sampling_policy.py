@@ -70,19 +70,22 @@ class PolicyRolloutSampler(TrajectorySampler):
                     assert q_values.ndim == 1, "Policy rollout requires one scalar Q-value per action."
                     assert q_values.numel() == len(applicable_actions), "Q-values and applicable actions must have equal lengths."
                     q_values_copy = q_values.clone()
+                    revisit_mask = torch.zeros_like(q_values_copy, dtype=torch.bool)
                     current_state = trajectory_state.state_sequence[-1]
                     # Reduce the value actions leading to already visited states.
                     for action_idx, action in enumerate(applicable_actions):
                         successor_state = action.apply(current_state)
                         successor_is_goal = trajectory_state.goal_condition.holds(successor_state)
                         successor_is_dead_end = (not successor_is_goal) and (
-                            len(successor_state.generate_applicable_actions()) == 0 or
+                            len(successor_state.applicable_actions()) == 0 or
                             self.reward_function.is_dead_end(successor_state, trajectory_state.goal_condition)
                         )
                         rewards.append(RewardFunction.get_dead_end_reward() if successor_is_dead_end else self.reward_function(current_state, action, successor_state, trajectory_state.goal_condition))
                         if successor_state in internal_state.closed_set:
-                            assert q_values_copy.is_floating_point(), "Policy rollout requires floating-point Q-values."
-                            q_values_copy[action_idx] = torch.finfo(q_values_copy.dtype).min
+                            revisit_mask[action_idx] = True
+                    if revisit_mask.any() and not revisit_mask.all():
+                        assert q_values_copy.is_floating_point(), "Policy rollout requires floating-point Q-values."
+                        q_values_copy.masked_fill_(revisit_mask, float('-inf'))
                     # Sample an action to apply.
                     assert q_values_copy.ndim > 0, "q-value tensor must be non-empty."
                     action_idx = self.sample_action_index(current_state, applicable_actions, q_values_copy)
@@ -92,7 +95,7 @@ class PolicyRolloutSampler(TrajectorySampler):
                     reward = rewards[action_idx]
                     is_solved = trajectory_state.goal_condition.holds(successor_state)
                     is_dead_end = (not is_solved) and (
-                        len(successor_state.generate_applicable_actions()) == 0 or
+                        len(successor_state.applicable_actions()) == 0 or
                         self.reward_function.is_dead_end(successor_state, trajectory_state.goal_condition)
                     )
                     value = q_values.max().item()

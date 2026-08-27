@@ -44,7 +44,7 @@ class IWSubtrajectorySampler(SubtrajectorySampler):
         def is_terminal(candidate_state: mm.State) -> bool:
             return (goal_condition.holds(candidate_state) or
                     self.reward_function.is_dead_end(candidate_state, goal_condition) or
-                    len(candidate_state.generate_applicable_actions()) == 0)
+                    len(candidate_state.applicable_actions()) == 0)
 
         if is_terminal(state):
             return None
@@ -60,17 +60,17 @@ class IWSubtrajectorySampler(SubtrajectorySampler):
         generated_edges: defaultdict[mm.State, list[tuple[mm.GroundAction, mm.State]]] = defaultdict(list)
         accepted_states: set[mm.State] = {state}
 
-        def collect_transition(current_state: mm.State, action: mm.GroundAction, _: float, successor_state: mm.State) -> None:
-            generated_edges[current_state].append((action, successor_state))
+        def collect_transition(transition: mm.Transition) -> None:
+            generated_edges[transition.source].append((transition.action, transition.target))
 
-        def collect_accepted_state(_: mm.State, __: mm.GroundAction, ___: float, successor_state: mm.State) -> None:
-            accepted_states.add(successor_state)
+        def collect_accepted_state(transition: mm.Transition) -> None:
+            accepted_states.add(transition.target)
 
-        mm.iw(state.get_problem(),
-              state,
-              self.width,
-              on_generate_state=collect_transition,
-              on_generate_new_state=collect_accepted_state)
+        mm.iw(state.problem,
+              start_state=state,
+              max_width=self.width,
+              on_generate=collect_transition,
+              on_discover=collect_accepted_state)
 
         # Construct the shortest-path graph without ever expanding an application-level terminal.
         predecessors: dict[mm.State, tuple[mm.GroundAction, mm.State]] = {}

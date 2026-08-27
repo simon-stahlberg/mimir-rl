@@ -129,7 +129,7 @@ class PolicyEvaluation:
                 - A boolean indicating whether the evaluation improved upon the best seen so far.
                 - A list of evaluation scores for each criterion.
         """
-        state_goals = [(problem.get_initial_state(), problem.get_goal_condition()) for problem in self.problems]
+        state_goals = [(problem.initial_state, problem.goal) for problem in self.problems]
         trajectories = self.trajectory_sampler.sample(state_goals, self.horizon)
         # Evaluate on all trajectories.
         evaluation = [criteria.evaluate(trajectories) for criteria in self.criterias]
@@ -178,7 +178,7 @@ class SequentialPolicyEvaluation:
         assert horizon >= 1, "horizon must be at least 1."
         assert k >= 1, "k must be at least 1."
         # Sort problems by difficulty: first by goal size, then by number of objects.
-        self.problems = sorted(problems, key=lambda p: (len(p.get_goal_condition()), len(p.get_objects())))
+        self.problems = sorted(problems, key=lambda p: (len(p.goal), len(p.declared_objects)))
         self.criterias = criterias
         self.trajectory_sampler = trajectory_sampler
         self.horizon = horizon
@@ -201,7 +201,7 @@ class SequentialPolicyEvaluation:
         successful_trajectories = []
         for idx in range(0, len(self.problems), self.k):
             continue_evaluation = False
-            state_goals = [(problem.get_initial_state(), problem.get_goal_condition()) for problem in self.problems[idx:idx + self.k]]
+            state_goals = [(problem.initial_state, problem.goal) for problem in self.problems[idx:idx + self.k]]
             trajectories = self.trajectory_sampler.sample(state_goals, self.horizon)
             for trajectory in trajectories:
                 if trajectory.is_solution():

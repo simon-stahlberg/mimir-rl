@@ -72,7 +72,7 @@ class IQNOptimization(OptimizationFunction):
                                       candidate_actions: list[mm.GroundAction]) -> None:
         assert len(reference_actions) == len(candidate_actions), "Models must return the same number of applicable actions."
         for reference_action, candidate_action in zip(reference_actions, candidate_actions):
-            assert reference_action.get_index() == candidate_action.get_index(), "Models must return applicable actions in the same order."
+            assert reference_action == candidate_action, "Models must return applicable actions in the same order."
 
     def __call__(self, transitions: list[Transition], weights: torch.Tensor) -> torch.Tensor:
         device = next(self.model.parameters()).device

@@ -52,7 +52,7 @@ class RGNNWrapper(ActionScalarModel):
         input_list: list[tuple[mm.State, list[mm.GroundAction], mm.GroundConjunctiveCondition]] = []
         actions_list: list[list[mm.GroundAction]] = []
         for state, goal in state_goals:
-            actions = state.generate_applicable_actions()
+            actions = list(state.applicable_actions())
             input_list.append((state, actions, goal))
             actions_list.append(actions)
         q_values_list: list[torch.Tensor] = self.rgnn.forward(input_list).readout('q')  # type: ignore
@@ -75,7 +75,7 @@ class DummyIQNWrapper(ActionQuantileModel):
         quantile_count = num_quantiles if taus is None else taus.shape[1]
         output: list[tuple[torch.Tensor, list[mm.GroundAction]]] = []
         for state, goal in state_goals:
-            actions = state.generate_applicable_actions()
+            actions = list(state.applicable_actions())
             assert len(actions) <= self.action_values.numel()
             if len(actions) == 0:
                 quantiles = torch.zeros((0, quantile_count), device=self.action_values.device)
@@ -93,10 +93,11 @@ class FakeBeamState:
     def set_actions(self, actions: list['FakeBeamAction']) -> None:
         self._actions = actions
 
-    def generate_applicable_actions(self) -> list['FakeBeamAction']:
-        return self._actions
+    def applicable_actions(self) -> tuple['FakeBeamAction', ...]:
+        return tuple(self._actions)
 
-    def get_problem(self) -> None:
+    @property
+    def problem(self) -> None:
         return None
 
     def __hash__(self) -> int:
@@ -118,11 +119,18 @@ class FakeBeamAction:
     def apply(self, state: FakeBeamState) -> FakeBeamState:
         return self.successor_state
 
-    def get_index(self) -> int:
-        return hash(self.name)
-
     def __repr__(self) -> str:
         return f"FakeBeamAction({self.name})"
+
+
+class FakeSearchTransition:
+    def __init__(self,
+                 source: FakeBeamState,
+                 action: FakeBeamAction,
+                 target: FakeBeamState) -> None:
+        self.source = source
+        self.action = action
+        self.target = target
 
 
 class FakeBeamGoalCondition:
@@ -146,7 +154,7 @@ class FixedBeamModel(ActionScalarModel):
     def forward(self, state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]]) -> list[tuple[torch.Tensor, list[mm.GroundAction]]]:
         output: list[tuple[torch.Tensor, list[mm.GroundAction]]] = []
         for state, _ in state_goals:
-            actions = state.generate_applicable_actions()
+            actions = list(state.applicable_actions())
             output.append((self.action_values[:len(actions)], actions))
         return output
 
@@ -190,11 +198,11 @@ class ActionBeamRewardFunction(RewardFunction):
 def test_model_wrapper():
     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     model = RGNNWrapper(domain)
-    current_state = problem.get_initial_state()
-    goal_condition = problem.get_goal_condition()
+    current_state = problem.initial_state
+    goal_condition = problem.goal
     output = model.forward([(current_state, goal_condition)])
     assert output is not None
     assert isinstance(output, list)
@@ -207,18 +215,18 @@ def test_model_wrapper():
 def test_dqn_loss():
     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     model = RGNNWrapper(domain)
     optimizer = torch.optim.Adam(model.parameters())
     lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
     loss = DQNOptimization(model, optimizer, lr_scheduler, model, 0.999, 10.0, True)
     transitions: list[Transition] = []
-    current_state = problem.get_initial_state()
+    current_state = problem.initial_state
     reward_function = ConstantRewardFunction(-1.0)
-    for selected_action in current_state.generate_applicable_actions():
+    for selected_action in current_state.applicable_actions():
         successor_state = selected_action.apply(current_state)
-        goal_condition = problem.get_goal_condition()
+        goal_condition = problem.goal
         reward = reward_function(current_state, selected_action, successor_state, goal_condition)
         transitions.append(Transition(current_state, successor_state, selected_action, -1.0, -1.0, reward, 0.0, reward_function, goal_condition, False))
     losses = loss(transitions, torch.ones(len(transitions)))
@@ -229,8 +237,8 @@ def test_dqn_loss():
 def test_sac_loss():
     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     policy_model = RGNNWrapper(domain)
     qvalue_model_1 = RGNNWrapper(domain)
     qvalue_model_2 = RGNNWrapper(domain)
@@ -262,11 +270,11 @@ def test_sac_loss():
                                                entropy_temperature,
                                                entropy_lr)
     transitions: list[Transition] = []
-    current_state = problem.get_initial_state()
+    current_state = problem.initial_state
     reward_function = ConstantRewardFunction(-1.0)
-    for selected_action in current_state.generate_applicable_actions():
+    for selected_action in current_state.applicable_actions():
         successor_state = selected_action.apply(current_state)
-        goal_condition = problem.get_goal_condition()
+        goal_condition = problem.goal
         reward = reward_function(current_state, selected_action, successor_state, goal_condition)
         transitions.append(Transition(current_state, successor_state, selected_action, -1.0, -1.0, reward, 0.0, reward_function, goal_condition, False))
     losses = loss(transitions, torch.ones(len(transitions)))
@@ -277,8 +285,8 @@ def test_sac_loss():
 def test_sac_loss_sets_training_modes():
     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     policy_model = RGNNWrapper(domain)
     qvalue_model_1 = RGNNWrapper(domain)
     qvalue_model_2 = RGNNWrapper(domain)
@@ -311,11 +319,11 @@ def test_sac_loss_sets_training_modes():
     qvalue_target_1.train()
     qvalue_target_2.train()
     transitions: list[Transition] = []
-    current_state = problem.get_initial_state()
+    current_state = problem.initial_state
     reward_function = ConstantRewardFunction(-1.0)
-    for selected_action in current_state.generate_applicable_actions():
+    for selected_action in current_state.applicable_actions():
         successor_state = selected_action.apply(current_state)
-        goal_condition = problem.get_goal_condition()
+        goal_condition = problem.goal
         reward = reward_function(current_state, selected_action, successor_state, goal_condition)
         transitions.append(Transition(current_state, successor_state, selected_action, -1.0, -1.0, reward, 0.0, reward_function, goal_condition, False))
     loss(transitions, torch.ones(len(transitions)))
@@ -329,8 +337,8 @@ def test_sac_loss_sets_training_modes():
 def test_sac_entropy_loss_uses_exact_temperature_objective():
     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     policy_model = RGNNWrapper(domain)
     qvalue_model_1 = RGNNWrapper(domain)
     qvalue_model_2 = RGNNWrapper(domain)
@@ -357,8 +365,8 @@ def test_sac_entropy_loss_uses_exact_temperature_objective():
                                                0.005,
                                                0.5,
                                                0.0003)
-    current_state = problem.get_initial_state()
-    actions = current_state.generate_applicable_actions()
+    current_state = problem.initial_state
+    actions = current_state.applicable_actions()
     num_actions = len(actions)
     logits = torch.zeros(num_actions, dtype=torch.float)
     loss.log_entropy_alpha.data.fill_(2.0)
@@ -372,8 +380,8 @@ def test_sac_entropy_loss_uses_exact_temperature_objective():
 def test_td3_loss():
     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     policy_model = RGNNWrapper(domain)
     policy_target = RGNNWrapper(domain)
     qvalue_model_1 = RGNNWrapper(domain)
@@ -402,11 +410,11 @@ def test_td3_loss():
                                    0.005,
                                    2)
     transitions: list[Transition] = []
-    current_state = problem.get_initial_state()
+    current_state = problem.initial_state
     reward_function = ConstantRewardFunction(-1.0)
-    for selected_action in current_state.generate_applicable_actions():
+    for selected_action in current_state.applicable_actions():
         successor_state = selected_action.apply(current_state)
-        goal_condition = problem.get_goal_condition()
+        goal_condition = problem.goal
         reward = reward_function(current_state, selected_action, successor_state, goal_condition)
         transitions.append(Transition(current_state, successor_state, selected_action, -1.0, -1.0, reward, 0.0, reward_function, goal_condition, False))
     losses = loss(transitions, torch.ones(len(transitions)))
@@ -417,8 +425,8 @@ def test_td3_loss():
 def test_td3_loss_with_gumbel_softmax():
     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     policy_model = RGNNWrapper(domain)
     policy_target = RGNNWrapper(domain)
     qvalue_model_1 = RGNNWrapper(domain)
@@ -449,11 +457,11 @@ def test_td3_loss_with_gumbel_softmax():
                                    2,
                                    True)
     transitions: list[Transition] = []
-    current_state = problem.get_initial_state()
+    current_state = problem.initial_state
     reward_function = ConstantRewardFunction(-1.0)
-    for selected_action in current_state.generate_applicable_actions():
+    for selected_action in current_state.applicable_actions():
         successor_state = selected_action.apply(current_state)
-        goal_condition = problem.get_goal_condition()
+        goal_condition = problem.goal
         reward = reward_function(current_state, selected_action, successor_state, goal_condition)
         transitions.append(Transition(current_state, successor_state, selected_action, -1.0, -1.0, reward, 0.0, reward_function, goal_condition, False))
     losses = loss(transitions, torch.ones(len(transitions)))
@@ -464,8 +472,8 @@ def test_td3_loss_with_gumbel_softmax():
 def test_td3_loss_sets_training_modes():
     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     policy_model = RGNNWrapper(domain)
     policy_target = RGNNWrapper(domain)
     qvalue_model_1 = RGNNWrapper(domain)
@@ -500,11 +508,11 @@ def test_td3_loss_sets_training_modes():
     qvalue_target_1.train()
     qvalue_target_2.train()
     transitions: list[Transition] = []
-    current_state = problem.get_initial_state()
+    current_state = problem.initial_state
     reward_function = ConstantRewardFunction(-1.0)
-    for selected_action in current_state.generate_applicable_actions():
+    for selected_action in current_state.applicable_actions():
         successor_state = selected_action.apply(current_state)
-        goal_condition = problem.get_goal_condition()
+        goal_condition = problem.goal
         reward = reward_function(current_state, selected_action, successor_state, goal_condition)
         transitions.append(Transition(current_state, successor_state, selected_action, -1.0, -1.0, reward, 0.0, reward_function, goal_condition, False))
     loss(transitions, torch.ones(len(transitions)))
@@ -519,19 +527,19 @@ def test_td3_loss_sets_training_modes():
 def test_iqn_loss():
     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     model = DummyIQNWrapper([float(i) for i in range(16)])
     target_model = DummyIQNWrapper([float(i) for i in range(16)])
     optimizer = torch.optim.Adam(model.parameters())
     lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
     loss = IQNOptimization(model, optimizer, lr_scheduler, target_model, 0.999, use_bounds=False)
     transitions: list[Transition] = []
-    current_state = problem.get_initial_state()
+    current_state = problem.initial_state
     reward_function = ConstantRewardFunction(-1.0)
-    for selected_action in current_state.generate_applicable_actions():
+    for selected_action in current_state.applicable_actions():
         successor_state = selected_action.apply(current_state)
-        goal_condition = problem.get_goal_condition()
+        goal_condition = problem.goal
         reward = reward_function(current_state, selected_action, successor_state, goal_condition)
         transitions.append(Transition(current_state, successor_state, selected_action, -1.0, -1.0, reward, 0.0, reward_function, goal_condition, False))
     losses = loss(transitions, torch.ones(len(transitions)))
@@ -542,8 +550,8 @@ def test_iqn_loss():
 def test_iqn_loss_sets_training_modes():
     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     model = DummyIQNWrapper([float(i) for i in range(16)])
     target_model = DummyIQNWrapper([float(i) for i in range(16)])
     optimizer = torch.optim.Adam(model.parameters())
@@ -552,11 +560,11 @@ def test_iqn_loss_sets_training_modes():
     model.eval()
     target_model.train()
     transitions: list[Transition] = []
-    current_state = problem.get_initial_state()
+    current_state = problem.initial_state
     reward_function = ConstantRewardFunction(-1.0)
-    for selected_action in current_state.generate_applicable_actions():
+    for selected_action in current_state.applicable_actions():
         successor_state = selected_action.apply(current_state)
-        goal_condition = problem.get_goal_condition()
+        goal_condition = problem.goal
         reward = reward_function(current_state, selected_action, successor_state, goal_condition)
         transitions.append(Transition(current_state, successor_state, selected_action, -1.0, -1.0, reward, 0.0, reward_function, goal_condition, False))
     loss(transitions, torch.ones(len(transitions)))
@@ -567,8 +575,8 @@ def test_iqn_loss_sets_training_modes():
 def test_iqn_target_uses_online_action_selection():
     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     model = DummyIQNWrapper([10.0, 0.0] + [0.0 for _ in range(14)])
     target_model = DummyIQNWrapper([1.0, 50.0] + [0.0 for _ in range(14)])
     optimizer = torch.optim.Adam(model.parameters())
@@ -582,13 +590,13 @@ def test_iqn_target_uses_online_action_selection():
                            num_target_quantiles=4,
                            num_selection_quantiles=4,
                            use_bounds=False)
-    current_state = problem.get_initial_state()
+    current_state = problem.initial_state
     reward_function = ConstantRewardFunction(-1.0)
     transition: Transition | None = None
-    for selected_action in current_state.generate_applicable_actions():
+    for selected_action in current_state.applicable_actions():
         successor_state = selected_action.apply(current_state)
-        if len(successor_state.generate_applicable_actions()) > 1:
-            goal_condition = problem.get_goal_condition()
+        if len(successor_state.applicable_actions()) > 1:
+            goal_condition = problem.goal
             reward = reward_function(current_state, selected_action, successor_state, goal_condition)
             transition = Transition(current_state, successor_state, selected_action, -1.0, -1.0, reward, 0.0, reward_function, goal_condition, False)
             break
@@ -698,10 +706,10 @@ def test_dead_end_targets_do_not_bootstrap():
 
 
 def test_trajectory_rejects_misaligned_value_sequences_when_empty():
-    domain = mm.Domain(DATA_DIR / 'gripper' / 'domain.pddl')
-    problem = mm.Problem(domain, DATA_DIR / 'gripper' / 'problem.pddl')
-    state = problem.get_initial_state()
-    goal_condition = problem.get_goal_condition()
+    domain = mm.Domain.from_file(DATA_DIR / 'gripper' / 'domain.pddl')
+    problem = mm.Problem.from_file(domain, DATA_DIR / 'gripper' / 'problem.pddl')
+    state = problem.initial_state
+    goal_condition = problem.goal
     reward_function = ConstantRewardFunction(-1.0)
 
     with pytest.raises(AssertionError, match="value sequence"):
@@ -711,17 +719,17 @@ def test_trajectory_rejects_misaligned_value_sequences_when_empty():
 
 
 def test_zero_transition_goal_trajectory_validates():
-    domain = mm.Domain(DATA_DIR / 'gripper' / 'domain.pddl')
-    problem = mm.Problem(domain, DATA_DIR / 'gripper' / 'problem.pddl')
-    state = problem.get_initial_state()
+    domain = mm.Domain.from_file(DATA_DIR / 'gripper' / 'domain.pddl')
+    problem = mm.Problem.from_file(domain, DATA_DIR / 'gripper' / 'problem.pddl')
+    state = problem.initial_state
     for action_name in (
         '(pick ball2 rooma left)',
         '(move rooma roomb)',
         '(drop ball2 roomb left)',
     ):
-        action = next(action for action in state.generate_applicable_actions() if str(action) == action_name)
+        action = next(action for action in state.applicable_actions() if str(action) == action_name)
         state = action.apply(state)
-    goal_condition = problem.get_goal_condition()
+    goal_condition = problem.goal
     assert goal_condition.holds(state)
 
     trajectory = Trajectory(
@@ -740,13 +748,13 @@ def test_zero_transition_goal_trajectory_validates():
 
 
 def test_trajectory_rejects_suffix_after_explicit_dead_end():
-    domain = mm.Domain(DATA_DIR / 'gripper' / 'domain.pddl')
-    problem = mm.Problem(domain, DATA_DIR / 'gripper' / 'problem.pddl')
-    start = problem.get_initial_state()
-    to_dead_end = next(action for action in start.generate_applicable_actions()
+    domain = mm.Domain.from_file(DATA_DIR / 'gripper' / 'domain.pddl')
+    problem = mm.Problem.from_file(domain, DATA_DIR / 'gripper' / 'problem.pddl')
+    start = problem.initial_state
+    to_dead_end = next(action for action in start.applicable_actions()
                        if str(action) == '(pick ball2 rooma left)')
     dead_end = to_dead_end.apply(start)
-    after_dead_end = next(action for action in dead_end.generate_applicable_actions()
+    after_dead_end = next(action for action in dead_end.applicable_actions()
                           if str(action) == '(move rooma roomb)')
     tail = after_dead_end.apply(dead_end)
     reward_function = DummyBeamRewardFunction(-1.0, cast(Any, {dead_end}))
@@ -759,42 +767,43 @@ def test_trajectory_rejects_suffix_after_explicit_dead_end():
             [0.0, 0.0],
             [-1.0, -1.0],
             reward_function,
-            problem.get_goal_condition(),
+            problem.goal,
         )
 
 
 def test_iw_subtrajectory_does_not_continue_after_explicit_dead_end(monkeypatch: pytest.MonkeyPatch):
-    domain = mm.Domain(DATA_DIR / 'gripper' / 'domain.pddl')
-    problem = mm.Problem(domain, DATA_DIR / 'gripper' / 'problem.pddl')
-    start = problem.get_initial_state()
-    pick = next(action for action in start.generate_applicable_actions()
+    domain = mm.Domain.from_file(DATA_DIR / 'gripper' / 'domain.pddl')
+    problem = mm.Problem.from_file(domain, DATA_DIR / 'gripper' / 'problem.pddl')
+    start = problem.initial_state
+    pick = next(action for action in start.applicable_actions()
                 if str(action) == '(pick ball2 rooma left)')
     dead_end = pick.apply(start)
-    move = next(action for action in dead_end.generate_applicable_actions()
+    move = next(action for action in dead_end.applicable_actions()
                 if str(action) == '(move rooma roomb)')
     after_dead_end = move.apply(dead_end)
-    drop = next(action for action in after_dead_end.generate_applicable_actions()
+    drop = next(action for action in after_dead_end.applicable_actions()
                 if str(action) == '(drop ball2 roomb left)')
     goal = drop.apply(after_dead_end)
 
     def fake_iw(*args: Any,
-                on_generate_state: Callable[..., None] | None = None,
-                on_generate_new_state: Callable[..., None] | None = None,
+                on_generate: Callable[..., None] | None = None,
+                on_discover: Callable[..., None] | None = None,
                 **kwargs: Any) -> None:
-        assert on_generate_state is not None
-        assert on_generate_new_state is not None
-        on_generate_state(start, pick, 0.0, dead_end)
-        on_generate_new_state(start, pick, 0.0, dead_end)
-        on_generate_state(dead_end, move, 0.0, after_dead_end)
-        on_generate_new_state(dead_end, move, 0.0, after_dead_end)
-        on_generate_state(after_dead_end, drop, 0.0, goal)
-        on_generate_new_state(after_dead_end, drop, 0.0, goal)
+        assert on_generate is not None
+        assert on_discover is not None
+        for transition in (
+            FakeSearchTransition(cast(Any, start), cast(Any, pick), cast(Any, dead_end)),
+            FakeSearchTransition(cast(Any, dead_end), cast(Any, move), cast(Any, after_dead_end)),
+            FakeSearchTransition(cast(Any, after_dead_end), cast(Any, drop), cast(Any, goal)),
+        ):
+            on_generate(transition)
+            on_discover(transition)
 
     monkeypatch.setattr(mm, 'iw', fake_iw)
     reward_function = DummyBeamRewardFunction(-1.0, cast(Any, {dead_end}))
     sampler = IWSubtrajectorySampler(reward_function, 1)
 
-    assert sampler.sample(start, problem.get_goal_condition()) is None
+    assert sampler.sample(start, problem.goal) is None
 
 
 def test_iw_subtrajectory_preserves_live_route_to_shared_state(monkeypatch: pytest.MonkeyPatch):
@@ -818,11 +827,11 @@ def test_iw_subtrajectory_preserves_live_route_to_shared_state(monkeypatch: pyte
     goal_condition = EmptyGoalCondition()
 
     def fake_iw(*args: Any,
-                on_generate_state: Callable[..., None] | None = None,
-                on_generate_new_state: Callable[..., None] | None = None,
+                on_generate: Callable[..., None] | None = None,
+                on_discover: Callable[..., None] | None = None,
                 **kwargs: Any) -> None:
-        assert on_generate_state is not None
-        assert on_generate_new_state is not None
+        assert on_generate is not None
+        assert on_discover is not None
         generated_edges = [
             (start, to_dead_end, dead_end, True),
             (dead_end, dead_to_shared, shared, True),
@@ -830,9 +839,10 @@ def test_iw_subtrajectory_preserves_live_route_to_shared_state(monkeypatch: pyte
             (live, live_to_shared, shared, False),
         ]
         for current_state, action, successor_state, is_new in generated_edges:
-            on_generate_state(current_state, action, 0.0, successor_state)
+            transition = FakeSearchTransition(current_state, action, successor_state)
+            on_generate(transition)
             if is_new:
-                on_generate_new_state(current_state, action, 0.0, successor_state)
+                on_discover(transition)
 
     captured: dict[str, Any] = {}
 
@@ -855,10 +865,10 @@ def test_iw_subtrajectory_preserves_live_route_to_shared_state(monkeypatch: pyte
 
 
 def test_td_error_uses_immediate_reward_as_terminal_target():
-    domain = mm.Domain(DATA_DIR / 'gripper' / 'domain.pddl')
-    problem = mm.Problem(domain, DATA_DIR / 'gripper' / 'problem.pddl')
-    start = problem.get_initial_state()
-    action = next(action for action in start.generate_applicable_actions()
+    domain = mm.Domain.from_file(DATA_DIR / 'gripper' / 'domain.pddl')
+    problem = mm.Problem.from_file(domain, DATA_DIR / 'gripper' / 'problem.pddl')
+    start = problem.initial_state
+    action = next(action for action in start.applicable_actions()
                   if str(action) == '(pick ball2 rooma left)')
     dead_end = action.apply(start)
     reward_function = DummyBeamRewardFunction(0.0, cast(Any, {dead_end}))
@@ -869,7 +879,7 @@ def test_td_error_uses_immediate_reward_as_terminal_target():
         [RewardFunction.get_dead_end_reward()],
         [0.0],
         reward_function,
-        problem.get_goal_condition(),
+        problem.goal,
     )
 
     assert trajectory[0].is_terminal
@@ -950,12 +960,12 @@ def test_beam_search_finalize_handles_initial_dead_end():
 def test_beam_search_sample_handles_initial_dead_end():
     domain_path = DATA_DIR / 'spanner' / 'domain.pddl'
     problem_path = DATA_DIR / 'spanner' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
-    goal_condition = problem.get_goal_condition()
-    dead_end_state = problem.get_initial_state()
-    while len(dead_end_state.generate_applicable_actions()) > 0:
-        walk_actions = [action for action in dead_end_state.generate_applicable_actions() if str(action).startswith('(walk ')]
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
+    goal_condition = problem.goal
+    dead_end_state = problem.initial_state
+    while len(dead_end_state.applicable_actions()) > 0:
+        walk_actions = [action for action in dead_end_state.applicable_actions() if str(action).startswith('(walk ')]
         assert len(walk_actions) == 1
         dead_end_state = walk_actions[0].apply(dead_end_state)
 
@@ -1165,8 +1175,8 @@ def test_beam_search_returns_live_branch_at_horizon_instead_of_dead_end():
         max_depth=1,
         beam_successor_values=[(
             torch.tensor([10.0, 9.0]),
-            [cast(mm.GroundAction, start.generate_applicable_actions()[0]),
-             cast(mm.GroundAction, start.generate_applicable_actions()[1])],
+            [cast(mm.GroundAction, start.applicable_actions()[0]),
+             cast(mm.GroundAction, start.applicable_actions()[1])],
         )],
     )
     sampler._finalize_state(trajectory_state, search_state)
@@ -1360,7 +1370,7 @@ def test_policy_rollout_revisit_mask_supports_float16():
     assert trajectory_states[0].action_sequence == [stay]
 
 
-def test_policy_rollout_revisit_mask_uses_dtype_minimum_instead_of_fixed_floor():
+def test_policy_rollout_revisit_mask_suppresses_revisit_below_any_finite_score():
     start = FakeBeamState('start')
     live = FakeBeamState('live')
     stay = FakeBeamAction('stay', start)
@@ -1379,6 +1389,57 @@ def test_policy_rollout_revisit_mask_uses_dtype_minimum_instead_of_fixed_floor()
     sampler._internal_sample(trajectory_states, rollout_states, [1])
 
     assert trajectory_states[0].action_sequence == [advance]
+
+
+@pytest.mark.parametrize('temperature', [0.5, 1.0, 2.0])
+@pytest.mark.parametrize('sampler_factory', [
+    lambda model, reward_function, temperature: BoltzmannTrajectorySampler(model, reward_function, temperature),
+    lambda model, reward_function, temperature: StateBoltzmannTrajectorySampler(model, reward_function, temperature, temperature, 10),
+], ids=['boltzmann', 'state-boltzmann'])
+def test_boltzmann_policy_rollout_suppresses_partial_revisits(sampler_factory, temperature):
+    start = FakeBeamState('start')
+    live = FakeBeamState('live')
+    stay = FakeBeamAction('stay', start)
+    advance = FakeBeamAction('advance', live)
+    start.set_actions([stay, advance])
+    live.set_actions([FakeBeamAction('live_stay', live)])
+    goal_condition = FakeBeamGoalCondition()
+    sampler = sampler_factory(
+        FixedBeamModel([1000.0, 0.0]),
+        DummyBeamRewardFunction(0.0),
+        temperature,
+    )
+    trajectory_states, rollout_states = sampler._initialize([
+        (cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition)),
+    ])
+
+    sampler._internal_sample(trajectory_states, rollout_states, [1])
+
+    assert trajectory_states[0].action_sequence == [advance]
+
+
+@pytest.mark.parametrize('temperature', [0.5, 1.0, 2.0])
+@pytest.mark.parametrize('sampler_factory', [
+    lambda model, reward_function, temperature: BoltzmannTrajectorySampler(model, reward_function, temperature),
+    lambda model, reward_function, temperature: StateBoltzmannTrajectorySampler(model, reward_function, temperature, temperature, 10),
+], ids=['boltzmann', 'state-boltzmann'])
+def test_boltzmann_policy_rollout_falls_back_when_all_successors_are_revisits(sampler_factory, temperature):
+    start = FakeBeamState('start')
+    stay = FakeBeamAction('stay', start)
+    start.set_actions([stay])
+    goal_condition = FakeBeamGoalCondition()
+    sampler = sampler_factory(
+        FixedBeamModel([0.0]),
+        DummyBeamRewardFunction(0.0),
+        temperature,
+    )
+    trajectory_states, rollout_states = sampler._initialize([
+        (cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition)),
+    ])
+
+    sampler._internal_sample(trajectory_states, rollout_states, [1])
+
+    assert trajectory_states[0].action_sequence == [stay]
 
 
 def test_policy_rollout_terminates_explicit_dead_end_with_dead_end_cost():
@@ -1403,13 +1464,13 @@ def test_policy_rollout_terminates_explicit_dead_end_with_dead_end_cost():
 
 
 def test_policy_rollout_handles_explicit_initial_dead_end():
-    domain = mm.Domain(DATA_DIR / 'gripper' / 'domain.pddl')
-    problem = mm.Problem(domain, DATA_DIR / 'gripper' / 'problem.pddl')
-    start = problem.get_initial_state()
+    domain = mm.Domain.from_file(DATA_DIR / 'gripper' / 'domain.pddl')
+    problem = mm.Problem.from_file(domain, DATA_DIR / 'gripper' / 'problem.pddl')
+    start = problem.initial_state
     reward_function = DummyBeamRewardFunction(0.0, cast(Any, {start}))
     sampler = GreedyPolicyTrajectorySampler(DummyBeamModel(), reward_function)
 
-    trajectory = sampler.sample([(start, problem.get_goal_condition())], 5)[0]
+    trajectory = sampler.sample([(start, problem.goal)], 5)[0]
 
     assert len(trajectory) == 0
     assert trajectory.is_unsolvable()
@@ -1442,12 +1503,12 @@ def test_policy_rollout_checks_horizon_before_model_evaluation():
 def test_ff_reward_function():
     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     reward_function = FFRewardFunction()
-    current_state = problem.get_initial_state()
-    goal_condition = problem.get_goal_condition()
-    for action in current_state.generate_applicable_actions():
+    current_state = problem.initial_state
+    goal_condition = problem.goal
+    for action in current_state.applicable_actions():
         successor_state = action.apply(current_state)
         reward = reward_function(current_state, action, successor_state, goal_condition)
         assert isinstance(reward, float)
@@ -1456,14 +1517,14 @@ def test_ff_reward_function():
 def test_sum_reward_function():
     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     reward_function_1 = ConstantRewardFunction(-1.0)
     reward_function_2 = FFRewardFunction()
     sum_reward_function = SumRewardFunction([reward_function_1, reward_function_2])
-    current_state = problem.get_initial_state()
-    goal_condition = problem.get_goal_condition()
-    for action in current_state.generate_applicable_actions():
+    current_state = problem.initial_state
+    goal_condition = problem.goal
+    for action in current_state.applicable_actions():
         successor_state = action.apply(current_state)
         reward = sum_reward_function(current_state, action, successor_state, goal_condition)
         assert isinstance(reward, float)
@@ -1498,12 +1559,12 @@ def test_sum_reward_function():
 def test_trajectory_sampler(domain_name: str, trajectory_sampler_creator: Callable[[ActionScalarModel, RewardFunction], TrajectorySampler]):
     domain_path = DATA_DIR / domain_name / 'domain.pddl'
     problem_path = DATA_DIR / domain_name / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     model = RGNNWrapper(domain)
     reward_function = GoalTransitionRewardFunction(1)
     trajectory_sampler = trajectory_sampler_creator(model, reward_function)
-    trajectories = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition())], 10)
+    trajectories = trajectory_sampler.sample([(problem.initial_state, problem.goal)], 10)
     assert isinstance(trajectories, list)
     assert len(trajectories) == 1
     trajectory = trajectories[0]
@@ -1516,8 +1577,8 @@ def test_trajectory_sampler(domain_name: str, trajectory_sampler_creator: Callab
 def test_trajectory_sampler_multiple(domain_name: str):
     domain_path = DATA_DIR / domain_name / 'domain.pddl'
     problem_path = DATA_DIR / domain_name / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     model = RGNNWrapper(domain)
     reward_function = GoalTransitionRewardFunction(1)
     trajectory_samplers: list[TrajectorySampler] = [
@@ -1526,7 +1587,7 @@ def test_trajectory_sampler_multiple(domain_name: str):
     ]
     trajectory_probabilities = [0.5, 0.5]
     trajectory_sampler = MultipleTrajectorySampler(reward_function, trajectory_samplers, trajectory_probabilities, 3)
-    trajectories = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition())], 10)
+    trajectories = trajectory_sampler.sample([(problem.initial_state, problem.goal)], 10)
     assert isinstance(trajectories, list)
     assert len(trajectories) == 1
     trajectory = trajectories[0]
@@ -1549,13 +1610,13 @@ def test_multiple_trajectory_sampler_rejects_invalid_horizon(horizon: int | floa
 def test_state_hindsight(domain_name: str):
     domain_path = DATA_DIR / domain_name / 'domain.pddl'
     problem_path = DATA_DIR / domain_name / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     model = RGNNWrapper(domain)
     reward_function = ConstantRewardFunction(-1)
     trajectory_sampler = PolicyTrajectorySampler(model, reward_function)
     trajectory_refiner = StateHindsightTrajectoryRefiner(10)
-    original_trajectories = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition())], 100)
+    original_trajectories = trajectory_sampler.sample([(problem.initial_state, problem.goal)], 100)
     refined_trajectories = trajectory_refiner.refine(original_trajectories)
     assert len(refined_trajectories) < 10
     for refined_trajectory in refined_trajectories:
@@ -1567,13 +1628,13 @@ def test_state_hindsight(domain_name: str):
 def test_propositional_hindsight(domain_name: str):
     domain_path = DATA_DIR / domain_name / 'domain.pddl'
     problem_path = DATA_DIR / domain_name / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     model = RGNNWrapper(domain)
     reward_function = ConstantRewardFunction(-1)
     trajectory_sampler = PolicyTrajectorySampler(model, reward_function)
     trajectory_refiner = PropositionalHindsightTrajectoryRefiner([problem], 10)
-    original_trajectories = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition())], 100)
+    original_trajectories = trajectory_sampler.sample([(problem.initial_state, problem.goal)], 100)
     refined_trajectories = trajectory_refiner.refine(original_trajectories)
     assert len(refined_trajectories) < 10
     for refined_trajectory in refined_trajectories:
@@ -1585,13 +1646,13 @@ def test_propositional_hindsight(domain_name: str):
 def test_lifted_hindsight(domain_name: str):
     domain_path = DATA_DIR / domain_name / 'domain.pddl'
     problem_path = DATA_DIR / domain_name / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     model = RGNNWrapper(domain)
     reward_function = ConstantRewardFunction(-1)
     trajectory_sampler = PolicyTrajectorySampler(model, reward_function)
     trajectory_refiner = LiftedHindsightTrajectoryRefiner([problem], 10)
-    original_trajectories = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition())], 100)
+    original_trajectories = trajectory_sampler.sample([(problem.initial_state, problem.goal)], 100)
     refined_trajectories = trajectory_refiner.refine(original_trajectories)
     assert len(refined_trajectories) < 10
     for refined_trajectory in refined_trajectories:
@@ -1603,8 +1664,8 @@ def test_lifted_hindsight(domain_name: str):
 def test_off_policy_algorithm(domain_name: str):
     domain_path = DATA_DIR / domain_name / 'domain.pddl'
     problem_path = DATA_DIR / domain_name / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     problems = [problem]
     model = RGNNWrapper(domain)
     optimizer = torch.optim.Adam(model.parameters())
@@ -1643,8 +1704,8 @@ def test_off_policy_algorithm(domain_name: str):
 def test_algorithm_hooks():
     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     problems = [problem]
     model = RGNNWrapper(domain)
     optimizer = torch.optim.Adam(model.parameters())
@@ -1712,8 +1773,8 @@ def test_algorithm_hooks():
 def test_value_based_initial_state_sampler():
     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     problems: list[mm.Problem] = [problem] * 100
     model: ActionScalarModel = RGNNWrapper(domain)
     reward_function: RewardFunction = ConstantRewardFunction(-1)
@@ -1722,10 +1783,10 @@ def test_value_based_initial_state_sampler():
     # We expect to get the original initial state.
     sampled_initial_states_1 = initial_state_sampler.sample(problems)
     assert len(sampled_initial_states_1) == len(problems)
-    assert all(sampled_initial_states_1[idx] == problem.get_initial_state() for idx, problem in enumerate(problems))
+    assert all(sampled_initial_states_1[idx] == problem.initial_state for idx, problem in enumerate(problems))
     # Second, test adding a bunch of states.
     trajectory_sampler: TrajectorySampler = BoltzmannTrajectorySampler(model, reward_function, 1.0)
-    sampled_trajectory = trajectory_sampler.sample([(problem.get_initial_state(), problem.get_goal_condition()) for problem in problems], 100)
+    sampled_trajectory = trajectory_sampler.sample([(problem.initial_state, problem.goal) for problem in problems], 100)
     for trajectory in sampled_trajectory:
         for transition in trajectory:
             initial_state_sampler.add_state(transition.current_state, transition.predicted_value)
@@ -1734,10 +1795,10 @@ def test_value_based_initial_state_sampler():
 
 
 def test_value_based_initial_state_sampler_uses_raw_q_and_terminal_state_values():
-    domain = mm.Domain(DATA_DIR / 'gripper' / 'domain.pddl')
-    problem = mm.Problem(domain, DATA_DIR / 'gripper' / 'problem.pddl')
-    initial_state = problem.get_initial_state()
-    to_dead_end = next(action for action in initial_state.generate_applicable_actions()
+    domain = mm.Domain.from_file(DATA_DIR / 'gripper' / 'domain.pddl')
+    problem = mm.Problem.from_file(domain, DATA_DIR / 'gripper' / 'problem.pddl')
+    initial_state = problem.initial_state
+    to_dead_end = next(action for action in initial_state.applicable_actions()
                        if str(action) == '(pick ball1 rooma left)')
     explicit_dead_end = to_dead_end.apply(initial_state)
 
@@ -1747,9 +1808,9 @@ def test_value_based_initial_state_sampler_uses_raw_q_and_terminal_state_values(
         '(move rooma roomb)',
         '(drop ball2 roomb left)',
     ):
-        action = next(action for action in goal_state.generate_applicable_actions() if str(action) == action_name)
+        action = next(action for action in goal_state.applicable_actions() if str(action) == action_name)
         goal_state = action.apply(goal_state)
-    assert problem.get_goal_condition().holds(goal_state)
+    assert problem.goal.holds(goal_state)
 
     model = FixedBeamModel([5.0, 4.0] + [0.0] * 14)
     reward_function = DummyBeamRewardFunction(20_000.0, cast(Any, {explicit_dead_end}))
@@ -1769,8 +1830,8 @@ def test_value_based_initial_state_sampler_uses_raw_q_and_terminal_state_values(
 def test_evaluation():
     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     problems: list[mm.Problem] = [problem]
     model: ActionScalarModel = RGNNWrapper(domain)
     reward_function: RewardFunction = ConstantRewardFunction(-1)
@@ -1788,8 +1849,8 @@ def test_evaluation():
 def test_sequential_evaluation():
     domain_path = DATA_DIR / 'gripper' / 'domain.pddl'
     problem_path = DATA_DIR / 'gripper' / 'problem.pddl'
-    domain = mm.Domain(domain_path)
-    problem = mm.Problem(domain, problem_path)
+    domain = mm.Domain.from_file(domain_path)
+    problem = mm.Problem.from_file(domain, problem_path)
     problems: list[mm.Problem] = [problem] * 10
     model: ActionScalarModel = RGNNWrapper(domain)
     reward_function: RewardFunction = ConstantRewardFunction(-1)

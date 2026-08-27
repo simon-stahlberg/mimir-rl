@@ -50,7 +50,7 @@ class BeamSearchTrajectorySampler(TrajectorySampler):
             self.depth: int = 0
             if goal_condition.holds(initial_state):
                 self.value_map[initial_state] = 0.0
-            elif (len(initial_state.generate_applicable_actions()) == 0 or
+            elif (len(initial_state.applicable_actions()) == 0 or
                   (reward_function is not None and reward_function.is_dead_end(initial_state, goal_condition))):
                 self.value_map[initial_state] = BeamSearchTrajectorySampler.DEAD_END_VALUE
             else:
@@ -83,7 +83,7 @@ class BeamSearchTrajectorySampler(TrajectorySampler):
                 successor_state = action.apply(current_state)
                 successor_is_goal = trajectory_state.goal_condition.holds(successor_state)
                 successor_is_dead_end = (not successor_is_goal) and (
-                    len(successor_state.generate_applicable_actions()) == 0 or
+                    len(successor_state.applicable_actions()) == 0 or
                     self.reward_function.is_dead_end(successor_state, trajectory_state.goal_condition)
                 )
                 successor_states.append(successor_state)

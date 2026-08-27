@@ -28,4 +28,4 @@ class OriginalGoalConditionSampler(GoalConditionSampler):
     """
 
     def sample(self, problems: list[mm.Problem]) -> list[mm.GroundConjunctiveCondition]:
-        return [problem.get_goal_condition() for problem in problems]
+        return [problem.goal for problem in problems]

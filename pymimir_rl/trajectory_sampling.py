@@ -20,7 +20,7 @@ class TrajectoryState:
         self.q_value_sequence: list[float] = []
         self.reward_sequence: list[float] = []
         self.solved: bool = goal_condition.holds(start_state)
-        self.done: bool = self.solved or (len(start_state.generate_applicable_actions()) == 0)
+        self.done: bool = self.solved or (len(start_state.applicable_actions()) == 0)
 
 
 class TrajectorySampler(ABC):

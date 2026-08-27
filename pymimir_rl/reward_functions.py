@@ -102,16 +102,16 @@ class FFRewardFunction(RewardFunction):
     """
 
     def __init__(self) -> None:
-        self.heuristics: dict[mm.Problem, mm.FFHeuristic] = {}
+        self.heuristics: dict[mm.Problem, mm.LiftedFFHeuristic] = {}
         self.cache: OrderedDict[tuple[mm.State, mm.GroundConjunctiveCondition], float] = OrderedDict()
 
     def _get_heuristic_value(self, state: mm.State, goal_condition: mm.GroundConjunctiveCondition) -> float:
-        problem = state.get_problem()
+        problem = state.problem
         if problem not in self.heuristics:
-            self.heuristics[problem] = mm.FFHeuristic(problem)
+            self.heuristics[problem] = mm.LiftedFFHeuristic(problem)
         state_goal = (state, goal_condition)
         if state_goal not in self.cache:
-            self.cache[state_goal] = self.heuristics[problem].compute_value(state, goal_condition)
+            self.cache[state_goal] = self.heuristics[problem].evaluate(state, goal_condition)
         while len(self.cache) > 10000:
             self.cache.popitem(last=False)
         return self.cache[state_goal]
