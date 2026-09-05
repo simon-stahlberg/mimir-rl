@@ -180,7 +180,7 @@ class LiftedHindsightTrajectoryRefiner(TrajectoryRefiner):
 
     def _generate_grounded_subgoals(self, problem: mm.Problem) -> dict[int, list[mm.GroundConjunctiveCondition]]:
         goal_literals = list(problem.goal)
-        goal_graph = nx.Graph()
+        goal_graph: nx.Graph[int] = nx.Graph()
         # Add nodes.
         for idx_i in list(range(len(goal_literals))):
             goal_graph.add_node(idx_i)  # type: ignore
