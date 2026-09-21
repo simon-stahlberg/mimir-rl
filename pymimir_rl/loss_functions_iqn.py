@@ -42,7 +42,7 @@ class IQNOptimization(OptimizationFunction):
                  num_target_quantiles: int = 64, # Quantiles for Target network
                  num_selection_quantiles: int = 32, # Quantiles for Action Selection
                  use_bounds: bool = True, # Clip targets to heuristic bounds
-                 dead_end_value: float = -1000.0 # Bootstrap value for dead-end successors
+                 dead_end_value: float = -10000.0 # Fixed target for proven dead-end successors
                  ) -> None:
         assert isinstance(model, ActionQuantileModel), "Model must be ActionQuantileModel"
         assert isinstance(model_optimizer, torch.optim.Optimizer), "Model optimizer must be Optimizer"
@@ -129,6 +129,12 @@ class IQNOptimization(OptimizationFunction):
         targets = []
 
         for i, transition in enumerate(transitions):
+            if transition.successor_is_dead_end:
+                targets.append(torch.full((self.num_target_quantiles,), self.dead_end_value, device=device))
+                continue
+            if transition.achieves_goal:
+                targets.append(torch.full((self.num_target_quantiles,), transition.immediate_reward, device=device))
+                continue
             qs_k, actions_k = batch_qs_selection[i]
             qs_prime, actions_prime = batch_qs_target[i]
 

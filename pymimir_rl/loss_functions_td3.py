@@ -142,8 +142,9 @@ class DiscreteTD3Optimization(OptimizationFunction):
 
             immediate_rewards = torch.tensor([t.immediate_reward for t in transitions], device=device, dtype=torch.float)
             is_terminal = torch.tensor([t.is_terminal for t in transitions], device=device, dtype=torch.float)
-            discounted_targets = immediate_rewards + (1.0 - is_terminal) * self.discount_factor * torch.stack(target_qvalues)
-            return discounted_targets
+            targets = torch.where(is_terminal.bool(), immediate_rewards, immediate_rewards + self.discount_factor * torch.stack(target_qvalues))
+            dead_ends = torch.tensor([transition.successor_is_dead_end for transition in transitions], dtype=torch.bool, device=device)
+            return torch.where(dead_ends, dead_end_value, targets)
 
     def _compute_critic_losses(self,
                                transitions: list[Transition],

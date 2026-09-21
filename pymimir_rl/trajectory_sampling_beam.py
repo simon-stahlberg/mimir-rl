@@ -2,6 +2,7 @@ import pymimir as mm
 import torch
 
 from dataclasses import dataclass
+from collections.abc import Callable
 
 from .models import ActionScalarModel
 from .reward_functions import RewardFunction
@@ -29,10 +30,12 @@ class BeamSearchTrajectorySampler(TrajectorySampler):
     def __init__(self,
                  model: ActionScalarModel,
                  reward_function: RewardFunction,
-                 max_beam_size: int) -> None:
+                 max_beam_size: int,
+                 *,
+                 dead_end_detector: Callable[[mm.State, mm.GroundConjunctiveCondition], bool] | None = None) -> None:
         assert isinstance(max_beam_size, int), "Maximum beam size must be an integer."
         assert max_beam_size > 0, "Maximum beam size must be positive."
-        super().__init__()
+        super().__init__(dead_end_detector)
         self.model = model
         self.reward_function = reward_function
         self.max_beam_size = max_beam_size
@@ -40,8 +43,7 @@ class BeamSearchTrajectorySampler(TrajectorySampler):
     class SearchState:
         def __init__(self,
                      initial_state: mm.State,
-                     goal_condition: mm.GroundConjunctiveCondition,
-                     reward_function: RewardFunction | None = None) -> None:
+                     goal_condition: mm.GroundConjunctiveCondition) -> None:
             self.transition_map: dict[mm.State, tuple[mm.State, mm.GroundAction, float, float]] = {}
             self.value_map: dict[mm.State, float] = {}
             self.beam_list: list[mm.State] = [initial_state]
@@ -50,8 +52,7 @@ class BeamSearchTrajectorySampler(TrajectorySampler):
             self.depth: int = 0
             if goal_condition.holds(initial_state):
                 self.value_map[initial_state] = 0.0
-            elif (len(initial_state.applicable_actions()) == 0 or
-                  (reward_function is not None and reward_function.is_dead_end(initial_state, goal_condition))):
+            elif len(initial_state.applicable_actions()) == 0:
                 self.value_map[initial_state] = BeamSearchTrajectorySampler.DEAD_END_VALUE
             else:
                 self.open_list = [initial_state]
@@ -83,13 +84,12 @@ class BeamSearchTrajectorySampler(TrajectorySampler):
                 successor_state = action.apply(current_state)
                 successor_is_goal = trajectory_state.goal_condition.holds(successor_state)
                 successor_is_dead_end = (not successor_is_goal) and (
-                    len(successor_state.applicable_actions()) == 0 or
-                    self.reward_function.is_dead_end(successor_state, trajectory_state.goal_condition)
+                    len(successor_state.applicable_actions()) == 0
                 )
                 successor_states.append(successor_state)
                 successor_goal_flags.append(successor_is_goal)
                 successor_dead_end_flags.append(successor_is_dead_end)
-                rewards.append(self.DEAD_END_VALUE if successor_is_dead_end else self.reward_function(current_state, action, successor_state, trajectory_state.goal_condition))
+                rewards.append(self.reward_function(current_state, action, successor_state, trajectory_state.goal_condition))
 
             search_state.value_map[current_state] = self._compute_current_state_value(successor_values)
 
@@ -145,11 +145,7 @@ class BeamSearchTrajectorySampler(TrajectorySampler):
 
     def _initialize(self, state_goals: list[tuple[mm.State, mm.GroundConjunctiveCondition]]) -> tuple[list[TrajectoryState], list[SearchState]]:
         trajectory_states = [TrajectoryState(state, goal_condition) for state, goal_condition in state_goals]
-        for trajectory_state in trajectory_states:
-            if (not trajectory_state.solved and
-                    self.reward_function.is_dead_end(trajectory_state.start_state, trajectory_state.goal_condition)):
-                trajectory_state.done = True
-        search_states = [self.SearchState(state, goal_condition, self.reward_function) for state, goal_condition in state_goals]
+        search_states = [self.SearchState(state, goal_condition) for state, goal_condition in state_goals]
         return trajectory_states, search_states
 
     def _internal_sample(self, trajectory_states: list[TrajectoryState], internal_states: list[SearchState], max_steps: list[int]) -> None:

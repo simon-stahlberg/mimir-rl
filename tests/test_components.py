@@ -626,11 +626,12 @@ def test_dead_end_targets_do_not_bootstrap():
                             0.0,
                             reward_function,
                             cast(mm.GroundConjunctiveCondition, goal_condition),
-                            False)
+                            False,
+                            successor_is_dead_end=True)
 
-    assert transition.enters_dead_end
-    assert transition.is_terminal
-    assert transition.immediate_reward == RewardFunction.get_dead_end_reward()
+    assert transition.successor_is_dead_end
+    assert not transition.is_terminal
+    assert transition.immediate_reward == 0.0
 
     scalar_model = FixedBeamModel([100.0])
     scalar_optimizer = torch.optim.Adam(scalar_model.parameters())
@@ -747,7 +748,7 @@ def test_zero_transition_goal_trajectory_validates():
     assert TDErrorCriteria(False).evaluate([trajectory]) == 0
 
 
-def test_trajectory_rejects_suffix_after_explicit_dead_end():
+def test_trajectory_labels_suffix_after_explicit_dead_end():
     domain = mm.Domain.from_file(DATA_DIR / 'gripper' / 'domain.pddl')
     problem = mm.Problem.from_file(domain, DATA_DIR / 'gripper' / 'problem.pddl')
     start = problem.initial_state
@@ -759,19 +760,23 @@ def test_trajectory_rejects_suffix_after_explicit_dead_end():
     tail = after_dead_end.apply(dead_end)
     reward_function = DummyBeamRewardFunction(-1.0, cast(Any, {dead_end}))
 
-    with pytest.raises(AssertionError, match="cannot continue"):
-        Trajectory(
-            [start, dead_end, tail],
-            [to_dead_end, after_dead_end],
-            [0.0, 0.0],
-            [0.0, 0.0],
-            [-1.0, -1.0],
-            reward_function,
-            problem.goal,
-        )
+    trajectory = Trajectory(
+        [start, dead_end, tail],
+        [to_dead_end, after_dead_end],
+        [0.0, 0.0],
+        [0.0, 0.0],
+        [-1.0, -1.0],
+        reward_function,
+        problem.goal,
+    )
+
+    assert trajectory.is_unsolvable()
+    assert all(t.successor_is_dead_end and not t.is_terminal for t in trajectory)
+    assert [t.immediate_reward for t in trajectory] == [-1.0, -1.0]
+    trajectory.validate(False)
 
 
-def test_iw_subtrajectory_does_not_continue_after_explicit_dead_end(monkeypatch: pytest.MonkeyPatch):
+def test_iw_subtrajectory_continues_after_explicit_dead_end(monkeypatch: pytest.MonkeyPatch):
     domain = mm.Domain.from_file(DATA_DIR / 'gripper' / 'domain.pddl')
     problem = mm.Problem.from_file(domain, DATA_DIR / 'gripper' / 'problem.pddl')
     start = problem.initial_state
@@ -803,10 +808,13 @@ def test_iw_subtrajectory_does_not_continue_after_explicit_dead_end(monkeypatch:
     reward_function = DummyBeamRewardFunction(-1.0, cast(Any, {dead_end}))
     sampler = IWSubtrajectorySampler(reward_function, 1)
 
-    assert sampler.sample(start, problem.goal) is None
+    trajectory = sampler.sample(start, problem.goal)
+    assert trajectory is not None
+    assert len(trajectory) == 3
+    assert trajectory.is_solution()
 
 
-def test_iw_subtrajectory_preserves_live_route_to_shared_state(monkeypatch: pytest.MonkeyPatch):
+def test_iw_subtrajectory_keeps_route_through_detected_state(monkeypatch: pytest.MonkeyPatch):
     start = FakeBeamState('start')
     dead_end = FakeBeamState('dead_end')
     live = FakeBeamState('live')
@@ -860,11 +868,11 @@ def test_iw_subtrajectory_preserves_live_route_to_shared_state(monkeypatch: pyte
     result = sampler.sample(cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition))
 
     assert result is captured
-    assert captured['states'] == [start, live, shared]
-    assert captured['actions'] == [to_live, live_to_shared]
+    assert captured['states'] == [start, dead_end, shared]
+    assert captured['actions'] == [to_dead_end, dead_to_shared]
 
 
-def test_td_error_uses_immediate_reward_as_terminal_target():
+def test_td_error_uses_fixed_target_for_nonterminal_dead_end():
     domain = mm.Domain.from_file(DATA_DIR / 'gripper' / 'domain.pddl')
     problem = mm.Problem.from_file(domain, DATA_DIR / 'gripper' / 'problem.pddl')
     start = problem.initial_state
@@ -882,11 +890,12 @@ def test_td_error_uses_immediate_reward_as_terminal_target():
         problem.goal,
     )
 
-    assert trajectory[0].is_terminal
+    assert not trajectory[0].is_terminal
+    assert trajectory[0].successor_is_dead_end
     assert TDErrorCriteria(False).evaluate([trajectory]) == 0
 
 
-def test_actionless_dead_end_transition_normalizes_reward():
+def test_actionless_dead_end_transition_preserves_reward():
     current_state = FakeBeamState('current')
     dead_end = FakeBeamState('dead_end')
     selected_action = FakeBeamAction('to_dead_end', dead_end)
@@ -904,9 +913,9 @@ def test_actionless_dead_end_transition_normalizes_reward():
                             cast(mm.GroundConjunctiveCondition, goal_condition),
                             False)
 
-    assert transition.enters_dead_end
+    assert transition.successor_is_dead_end
     assert transition.is_terminal
-    assert transition.immediate_reward == RewardFunction.get_dead_end_reward()
+    assert transition.immediate_reward == -1.0
 
 
 def test_dead_end_cost_does_not_imply_dead_end_state():
@@ -928,7 +937,7 @@ def test_dead_end_cost_does_not_imply_dead_end_state():
                             cast(mm.GroundConjunctiveCondition, goal_condition),
                             False)
 
-    assert not transition.enters_dead_end
+    assert not transition.successor_is_dead_end
     assert not transition.is_terminal
     assert transition.immediate_reward == RewardFunction.get_dead_end_reward()
 
@@ -1118,7 +1127,7 @@ def test_beam_search_follows_high_q_dead_end():
     assert trajectory_state.done
     assert search_state.beam_list == [dead_end]
     assert trajectory_state.state_sequence == [start, dead_end]
-    assert trajectory_state.reward_sequence == [RewardFunction.get_dead_end_reward()]
+    assert trajectory_state.reward_sequence == [0.0]
 
 
 def test_beam_search_forgets_dead_end_while_live_beam_remains():
@@ -1187,7 +1196,7 @@ def test_beam_search_returns_live_branch_at_horizon_instead_of_dead_end():
     assert trajectory_state.state_sequence == [start, live]
 
 
-def test_beam_search_terminates_safely_proven_dead_end():
+def test_beam_search_continues_through_proven_dead_end():
     start = FakeBeamState('start')
     proven_dead_end = FakeBeamState('proven_dead_end')
     live = FakeBeamState('live')
@@ -1207,11 +1216,11 @@ def test_beam_search_terminates_safely_proven_dead_end():
                        beam_successor_values=[(torch.tensor([10.0, -10.0]), [cast(mm.GroundAction, to_proven_dead_end), cast(mm.GroundAction, to_live)])])
     sampler._finalize_state(trajectory_state, search_state)
 
-    assert trajectory_state.done
+    assert not trajectory_state.done
     assert search_state.beam_list == [proven_dead_end]
-    assert search_state.open_list == []
+    assert search_state.open_list == [proven_dead_end]
     assert trajectory_state.state_sequence == [start, proven_dead_end]
-    assert trajectory_state.reward_sequence == [RewardFunction.get_dead_end_reward()]
+    assert trajectory_state.reward_sequence == [0.0]
 
 
 def test_beam_search_does_not_infer_dead_end_from_reward_value():
@@ -1240,7 +1249,7 @@ def test_beam_search_does_not_infer_dead_end_from_reward_value():
     assert search_state.open_list == [live]
 
 
-def test_beam_search_recognizes_safely_proven_initial_dead_end():
+def test_beam_search_expands_proven_initial_dead_end():
     start = FakeBeamState('start')
     start.set_actions([FakeBeamAction('stay', start)])
     goal_condition = FakeBeamGoalCondition()
@@ -1251,9 +1260,9 @@ def test_beam_search_recognizes_safely_proven_initial_dead_end():
         (cast(mm.State, start), cast(mm.GroundConjunctiveCondition, goal_condition)),
     ])
 
-    assert trajectory_states[0].done
+    assert not trajectory_states[0].done
     assert not trajectory_states[0].solved
-    assert search_states[0].open_list == []
+    assert search_states[0].open_list == [start]
 
 
 def test_beam_search_keeps_dead_end_successor_in_final_trajectory():
@@ -1272,7 +1281,7 @@ def test_beam_search_keeps_dead_end_successor_in_final_trajectory():
     assert trajectory_state.done
     assert trajectory_state.state_sequence == [start, dead_end]
     assert trajectory_state.action_sequence == [action]
-    assert trajectory_state.reward_sequence == [RewardFunction.get_dead_end_reward()]
+    assert trajectory_state.reward_sequence == [-1.0]
     assert trajectory_state.q_value_sequence == [7.0]
     assert trajectory_state.value_sequence == [7.0]
 
@@ -1442,7 +1451,7 @@ def test_boltzmann_policy_rollout_falls_back_when_all_successors_are_revisits(sa
     assert trajectory_states[0].action_sequence == [stay]
 
 
-def test_policy_rollout_terminates_explicit_dead_end_with_dead_end_cost():
+def test_policy_rollout_continues_explicit_dead_end_with_ordinary_reward():
     start = FakeBeamState('start')
     dead_end = FakeBeamState('dead_end')
     dead_end.set_actions([FakeBeamAction('stay', dead_end)])
@@ -1457,10 +1466,10 @@ def test_policy_rollout_terminates_explicit_dead_end_with_dead_end_cost():
 
     sampler._internal_sample(trajectory_states, rollout_states, [5])
 
-    assert trajectory_states[0].done
+    assert not trajectory_states[0].done
     assert not trajectory_states[0].solved
     assert trajectory_states[0].action_sequence == [action]
-    assert trajectory_states[0].reward_sequence == [RewardFunction.get_dead_end_reward()]
+    assert trajectory_states[0].reward_sequence == [25.0]
 
 
 def test_policy_rollout_handles_explicit_initial_dead_end():
@@ -1468,13 +1477,14 @@ def test_policy_rollout_handles_explicit_initial_dead_end():
     problem = mm.Problem.from_file(domain, DATA_DIR / 'gripper' / 'problem.pddl')
     start = problem.initial_state
     reward_function = DummyBeamRewardFunction(0.0, cast(Any, {start}))
-    sampler = GreedyPolicyTrajectorySampler(DummyBeamModel(), reward_function)
+    sampler = GreedyPolicyTrajectorySampler(FixedBeamModel([0.0] * 10), reward_function)
 
     trajectory = sampler.sample([(start, problem.goal)], 5)[0]
 
-    assert len(trajectory) == 0
+    assert len(trajectory) == 5
     assert trajectory.is_unsolvable()
-    trajectory.validate()
+    assert all(t.successor_is_dead_end for t in trajectory)
+    trajectory.validate(False)
 
 
 @pytest.mark.parametrize('horizon', [0, -1, 1.5])

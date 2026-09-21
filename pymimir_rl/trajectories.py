@@ -1,4 +1,5 @@
 import pymimir as mm
+from collections.abc import Callable
 
 from .reward_functions import RewardFunction
 
@@ -14,7 +15,8 @@ class Transition:
                  future_rewards: float,
                  reward_function: RewardFunction,
                  goal_condition: mm.GroundConjunctiveCondition,
-                 part_of_solution: bool) -> None:
+                 part_of_solution: bool,
+                 successor_is_dead_end: bool = False) -> None:
         assert current_state.problem == successor_state.problem, "Origin and destination states must belong to the same problem."
         self.current_state = current_state
         self.successor_state = successor_state
@@ -25,12 +27,10 @@ class Transition:
         self.goal_condition = goal_condition
         self.part_of_solution = part_of_solution
         self.achieves_goal = goal_condition.holds(successor_state)
-        self.enters_dead_end = not self.achieves_goal and (
-            reward_function.is_dead_end(successor_state, goal_condition) or
-            len(successor_state.applicable_actions()) == 0
-        )
-        self.is_terminal = self.achieves_goal or self.enters_dead_end
-        self.immediate_reward = RewardFunction.get_dead_end_reward() if self.enters_dead_end else reward
+        has_no_actions = len(successor_state.applicable_actions()) == 0
+        self.successor_is_dead_end = not self.achieves_goal and (successor_is_dead_end or has_no_actions)
+        self.is_terminal = self.achieves_goal or has_no_actions
+        self.immediate_reward = reward
         self.future_rewards = future_rewards
 
     def __str__(self) -> str:
@@ -45,7 +45,8 @@ class Trajectory:
                  q_value_sequence: list[float],
                  reward_sequence: list[float],
                  reward_function: RewardFunction,
-                 goal_condition: mm.GroundConjunctiveCondition):
+                 goal_condition: mm.GroundConjunctiveCondition,
+                 dead_end_detector: Callable[[mm.State, mm.GroundConjunctiveCondition], bool] | None = None):
         assert len(state_sequence) >= 1, "State sequence must contain at least one element."
         assert len(state_sequence) == len(action_sequence) + 1, "State sequence must have one more element than action sequence."
         assert len(action_sequence) == len(value_sequence), "Action sequence and value sequence must have the same length."
@@ -57,21 +58,22 @@ class Trajectory:
         self.final_state = state_sequence[-1]
         self.goal_condition = goal_condition
         self.achieves_goal = goal_condition.holds(self.final_state)
-        normalized_rewards = list(reward_sequence)
-        for idx, reward in enumerate(normalized_rewards):
-            successor_state = state_sequence[idx + 1]
-            achieves_goal = goal_condition.holds(successor_state)
-            enters_dead_end = not achieves_goal and (
-                reward_function.is_dead_end(successor_state, goal_condition) or
-                len(successor_state.applicable_actions()) == 0
+        self.dead_end_detector = dead_end_detector
+        dead_end = False
+        dead_end_flags: list[bool] = []
+        for idx, state in enumerate(state_sequence):
+            achieves_goal = goal_condition.holds(state)
+            has_no_actions = len(state.applicable_actions()) == 0
+            assert idx == len(action_sequence) or not (achieves_goal or has_no_actions), "A trajectory cannot continue after reaching a terminal state."
+            # A recorded solution proves reachability from every state. Otherwise,
+            # unreachability is preserved by every subsequent action for this goal.
+            dead_end = not self.achieves_goal and (
+                dead_end or has_no_actions or
+                reward_function.is_dead_end(state, goal_condition) or
+                (dead_end_detector is not None and dead_end_detector(state, goal_condition))
             )
-            assert idx == len(action_sequence) - 1 or not (achieves_goal or enters_dead_end), "A trajectory cannot continue after reaching a terminal state."
-            if enters_dead_end:
-                normalized_rewards[idx] = RewardFunction.get_dead_end_reward()
-        self.enters_dead_end = not self.achieves_goal and (
-            reward_function.is_dead_end(state_sequence[-1], goal_condition) or
-            (len(state_sequence[-1].applicable_actions()) == 0)
-        )
+            dead_end_flags.append(dead_end)
+        self.enters_dead_end = dead_end
         self.reward_function = reward_function
         self.transitions: list[Transition] = []
         for idx in range(len(action_sequence)):
@@ -80,9 +82,9 @@ class Trajectory:
             selected_action = action_sequence[idx]
             value = value_sequence[idx]
             q_value = q_value_sequence[idx]
-            reward = normalized_rewards[idx]
-            future_rewards = sum(normalized_rewards[idx + 1:])
-            transition = Transition(current_state, successor_state, selected_action, value, q_value, reward, future_rewards, reward_function, goal_condition, self.achieves_goal)
+            reward = reward_sequence[idx]
+            future_rewards = sum(reward_sequence[idx + 1:])
+            transition = Transition(current_state, successor_state, selected_action, value, q_value, reward, future_rewards, reward_function, goal_condition, self.achieves_goal, dead_end_flags[idx + 1])
             self.transitions.append(transition)
 
     def __iter__(self):
@@ -128,7 +130,8 @@ class Trajectory:
                           cloned_q_value_sequence,
                           cloned_reward_sequence,
                           self.reward_function,
-                          goal_condition)
+                          goal_condition,
+                          self.dead_end_detector)
 
     def validate(self, should_achieve_goal: bool = True) -> None:
         """

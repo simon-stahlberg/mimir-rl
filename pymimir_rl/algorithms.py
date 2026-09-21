@@ -23,7 +23,7 @@ class OffPolicyAlgorithm:
                  problems: list[mm.Problem],
                  loss_function: OptimizationFunction,
                  reward_function: RewardFunction,
-                 original_replay_buffer: ReplayBuffer | None,
+                 dead_end_replay_buffer: ReplayBuffer | None,
                  hindsight_replay_buffer: ReplayBuffer,
                  trajectory_sampler: TrajectorySampler,
                  horizon: int,
@@ -41,7 +41,7 @@ class OffPolicyAlgorithm:
             problems (list[mm.Problem]): List of problem instances.
             loss_function (LossFunction): Function to compute losses.
             reward_function (RewardFunction): Function to compute rewards.
-            original_replay_buffer (ReplayBuffer): Buffer to store original experience transitions.
+            dead_end_replay_buffer (ReplayBuffer): Buffer to store transitions from proven dead-end trajectories.
             hindsight_replay_buffer (ReplayBuffer): Buffer to store hindsight experience transitions.
             trajectory_sampler (TrajectorySampler): Sampler for generating trajectories.
             horizon (int): Maximum length of the sampled trajectories.
@@ -57,7 +57,7 @@ class OffPolicyAlgorithm:
         assert len(problems) > 0, "At least one problem must be provided."
         assert isinstance(loss_function, OptimizationFunction), "Loss function must be an instance of LossFunction."
         assert isinstance(reward_function, RewardFunction), "Reward function must be an instance of RewardFunction."
-        assert isinstance(original_replay_buffer, ReplayBuffer) or original_replay_buffer is None, "Original replay buffer must be an instance of ReplayBuffer."
+        assert isinstance(dead_end_replay_buffer, ReplayBuffer) or dead_end_replay_buffer is None, "Dead-end replay buffer must be an instance of ReplayBuffer."
         assert isinstance(hindsight_replay_buffer, ReplayBuffer), "Hindsight replay buffer must be an instance of ReplayBuffer."
         assert isinstance(trajectory_sampler, TrajectorySampler), "Trajectory sampler must be an instance of TrajectorySampler."
         assert isinstance(horizon, int), "Horizon must be an integer."
@@ -67,7 +67,7 @@ class OffPolicyAlgorithm:
         self.problems = problems
         self.loss_function = loss_function
         self.reward_function = reward_function
-        self.original_replay_buffer = original_replay_buffer
+        self.dead_end_replay_buffer = dead_end_replay_buffer
         self.hindsight_replay_buffer = hindsight_replay_buffer
         self.trajectory_sampler = trajectory_sampler
         self.horizon = horizon
@@ -327,12 +327,12 @@ class OffPolicyAlgorithm:
             goal_conditions = self.sample_goal_conditions(problems)
             state_goals = list(zip(initial_states, goal_conditions))
             trajectories = self.sample_trajectories(state_goals)
-            # Store successful trajectories in the original replay buffers.
-            if self.original_replay_buffer is not None:
+            # Keep the full trajectory, including exploration after the first dead-end proof.
+            if self.dead_end_replay_buffer is not None:
                 for trajectory in trajectories:
-                    if trajectory.is_solution() or trajectory.is_unsolvable():
+                    if trajectory.is_unsolvable():
                         for transition in trajectory:
-                            self.original_replay_buffer.push(transition)
+                            self.dead_end_replay_buffer.push(transition)
             # Store all relabeled trajectories in the hindsight replay buffer.
             if self.hindsight_replay_buffer is not None:
                 refined_trajectories = self.refine_trajectories(trajectories)
@@ -349,33 +349,32 @@ class OffPolicyAlgorithm:
             batch_size (int): The batch size for model optimization.
         """
         self._notify_pre_optimize_model()
-        len_original = len(self.original_replay_buffer) if self.original_replay_buffer is not None else 0
+        len_dead_end = len(self.dead_end_replay_buffer) if self.dead_end_replay_buffer is not None else 0
         len_hindsight = len(self.hindsight_replay_buffer) if self.hindsight_replay_buffer is not None else 0
-        buffer_size = len_original + len_hindsight
+        buffer_size = len_dead_end + len_hindsight
         if buffer_size > 0:
             for _ in range(self.train_steps):
-                # Sample half the batch from the original buffer, if available.
-                if self.original_replay_buffer is not None:
-                    org_samples = min(len(self.original_replay_buffer), batch_size // 2)
-                    org_transitions, org_weights, org_indices = self.original_replay_buffer.sample(org_samples)
+                if self.dead_end_replay_buffer is not None:
+                    dead_samples = min(len_dead_end, batch_size // 2) if len_hindsight else batch_size
+                    dead_transitions, dead_weights, dead_indices = self.dead_end_replay_buffer.sample(dead_samples)
                 else:
-                    org_samples = 0
-                    org_transitions, org_weights, org_indices = [], torch.tensor([]), torch.tensor([])
+                    dead_samples = 0
+                    dead_transitions, dead_weights, dead_indices = [], torch.tensor([]), torch.tensor([])
                 # Sample from the hindsight buffer to fill the rest of the batch, if available.
                 if self.hindsight_replay_buffer is not None:
-                    her_samples = batch_size - org_samples
+                    her_samples = batch_size - dead_samples
                     her_transitions, her_weights, her_indices = self.hindsight_replay_buffer.sample(her_samples)
                 else:
                     her_samples = 0
                     her_transitions, her_weights, her_indices = [], torch.tensor([]), torch.tensor([])
                 # Combine buffers and compute losses.
-                transitions = org_transitions + her_transitions
-                weights = torch.cat((org_weights, her_weights), dim=0)
+                transitions = dead_transitions + her_transitions
+                weights = torch.cat((dead_weights, her_weights), dim=0)
                 losses = self.loss_function(transitions, weights)
                 cpu_losses = losses.detach().cpu()
-                if self.original_replay_buffer is not None:
-                    self.original_replay_buffer.update(org_indices, cpu_losses[:org_samples])
+                if self.dead_end_replay_buffer is not None:
+                    self.dead_end_replay_buffer.update(dead_indices, cpu_losses[:dead_samples])
                 if self.hindsight_replay_buffer is not None:
-                    self.hindsight_replay_buffer.update(her_indices, cpu_losses[org_samples:])
+                    self.hindsight_replay_buffer.update(her_indices, cpu_losses[dead_samples:])
                 self._notify_train_step(transitions, losses.detach())
         self._notify_post_optimize_model()

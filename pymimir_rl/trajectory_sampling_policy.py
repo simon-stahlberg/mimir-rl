@@ -3,6 +3,7 @@ import torch
 
 from abc import abstractmethod
 from collections import defaultdict
+from collections.abc import Callable
 from typing import Any
 
 from .models import ActionScalarModel
@@ -17,10 +18,12 @@ class PolicyRolloutSampler(TrajectorySampler):
     """
     def __init__(self,
                  model: ActionScalarModel,
-                 reward_function: RewardFunction) -> None:
+                 reward_function: RewardFunction,
+                 *,
+                 dead_end_detector: Callable[[mm.State, mm.GroundConjunctiveCondition], bool] | None = None) -> None:
         assert isinstance(model, ActionScalarModel), "Model must be an instance of ActionScalarModel."
         assert isinstance(reward_function, RewardFunction), "Reward function must be an instance of RewardFunction."
-        super().__init__()
+        super().__init__(dead_end_detector)
         self.model = model
         self.reward_function = reward_function
 
@@ -45,9 +48,6 @@ class PolicyRolloutSampler(TrajectorySampler):
         trajectory_states: list[TrajectoryState] = [TrajectoryState(initial_state, goal_condition) for initial_state, goal_condition in state_goals]
         for trajectory_state in trajectory_states:
             trajectory_state.state_sequence.append(trajectory_state.start_state)
-            if (not trajectory_state.solved and
-                    self.reward_function.is_dead_end(trajectory_state.start_state, trajectory_state.goal_condition)):
-                trajectory_state.done = True
         rollout_states = [self.RolloutContext(initial_state) for initial_state, _ in state_goals]
         return trajectory_states, rollout_states
 
@@ -65,7 +65,6 @@ class PolicyRolloutSampler(TrajectorySampler):
                 for rollout_idx, (q_values, applicable_actions) in zip(context_indices, q_values_batch):
                     trajectory_state = trajectory_states[rollout_idx]
                     internal_state = internal_states[rollout_idx]
-                    rewards: list[float] = []
                     q_values = q_values.cpu()  # Move the result to CPU, the remaining operations are very cheap.
                     assert q_values.ndim == 1, "Policy rollout requires one scalar Q-value per action."
                     assert q_values.numel() == len(applicable_actions), "Q-values and applicable actions must have equal lengths."
@@ -75,12 +74,6 @@ class PolicyRolloutSampler(TrajectorySampler):
                     # Reduce the value actions leading to already visited states.
                     for action_idx, action in enumerate(applicable_actions):
                         successor_state = action.apply(current_state)
-                        successor_is_goal = trajectory_state.goal_condition.holds(successor_state)
-                        successor_is_dead_end = (not successor_is_goal) and (
-                            len(successor_state.applicable_actions()) == 0 or
-                            self.reward_function.is_dead_end(successor_state, trajectory_state.goal_condition)
-                        )
-                        rewards.append(RewardFunction.get_dead_end_reward() if successor_is_dead_end else self.reward_function(current_state, action, successor_state, trajectory_state.goal_condition))
                         if successor_state in internal_state.closed_set:
                             revisit_mask[action_idx] = True
                     if revisit_mask.any() and not revisit_mask.all():
@@ -92,15 +85,12 @@ class PolicyRolloutSampler(TrajectorySampler):
                     action = applicable_actions[action_idx]
                     successor_state = action.apply(current_state)
                     q_value = q_values[action_idx].item()
-                    reward = rewards[action_idx]
+                    reward = self.reward_function(current_state, action, successor_state, trajectory_state.goal_condition)
                     is_solved = trajectory_state.goal_condition.holds(successor_state)
-                    is_dead_end = (not is_solved) and (
-                        len(successor_state.applicable_actions()) == 0 or
-                        self.reward_function.is_dead_end(successor_state, trajectory_state.goal_condition)
-                    )
+                    has_no_actions = len(successor_state.applicable_actions()) == 0
                     value = q_values.max().item()
                     exceeds_horizon = len(trajectory_state.state_sequence) >= max_steps[rollout_idx]
-                    is_done = is_solved or is_dead_end or exceeds_horizon
+                    is_done = is_solved or has_no_actions or exceeds_horizon
                     # Update states.
                     trajectory_state.state_sequence.append(successor_state)
                     trajectory_state.action_sequence.append(action)
@@ -132,8 +122,10 @@ class PolicyTrajectorySampler(PolicyRolloutSampler):
     """
     def __init__(self,
                  model: ActionScalarModel,
-                 reward_function: RewardFunction) -> None:
-        super().__init__(model, reward_function)
+                 reward_function: RewardFunction,
+                 *,
+                 dead_end_detector: Callable[[mm.State, mm.GroundConjunctiveCondition], bool] | None = None) -> None:
+        super().__init__(model, reward_function, dead_end_detector=dead_end_detector)
 
     def sample_action_index(self, state: mm.State, actions: list[mm.GroundAction], values: torch.Tensor) -> int:
         probabilities = values.softmax(0)
@@ -148,14 +140,18 @@ class EpsilonGreedyTrajectorySampler(PolicyRolloutSampler):
     def __init__(self,
                  model: ActionScalarModel,
                  reward_function: RewardFunction,
-                 epsilon: float) -> None:
+                 epsilon: float,
+                 *,
+                 dead_end_detector: Callable[[mm.State, mm.GroundConjunctiveCondition], bool] | None = None) -> None:
         assert isinstance(epsilon, float), "Epsilon must be a float."
         assert epsilon >= 0.0, "Epsilon must be a probability."
         assert epsilon <= 1.0, "Epsilon must be a probability."
-        super().__init__(model, reward_function)
+        super().__init__(model, reward_function, dead_end_detector=dead_end_detector)
         self.epsilon = epsilon
 
-    def set_epsilon(self, epsilon: float) -> None:
+    def set_epsilon(self, epsilon: float,
+                 *,
+                 dead_end_detector: Callable[[mm.State, mm.GroundConjunctiveCondition], bool] | None = None) -> None:
         self.epsilon = epsilon
 
     def get_epsilon(self) -> float:
@@ -175,13 +171,17 @@ class BoltzmannTrajectorySampler(PolicyRolloutSampler):
     def __init__(self,
                  model: ActionScalarModel,
                  reward_function: RewardFunction,
-                 temperature: float) -> None:
+                 temperature: float,
+                 *,
+                 dead_end_detector: Callable[[mm.State, mm.GroundConjunctiveCondition], bool] | None = None) -> None:
         assert isinstance(temperature, float), "Temperature must be a float."
         assert temperature > 0.0, "Temperature must be positive."
-        super().__init__(model, reward_function)
+        super().__init__(model, reward_function, dead_end_detector=dead_end_detector)
         self.temperature = temperature
 
-    def set_temperature(self, temperature: float) -> None:
+    def set_temperature(self, temperature: float,
+                 *,
+                 dead_end_detector: Callable[[mm.State, mm.GroundConjunctiveCondition], bool] | None = None) -> None:
         self.temperature = temperature
 
     def get_temperature(self) -> float:
@@ -202,8 +202,10 @@ class StateBoltzmannTrajectorySampler(PolicyRolloutSampler):
                  reward_function: RewardFunction,
                  initial_temperature: float,
                  final_temperature: float,
-                 temperature_steps: int) -> None:
-        super().__init__(model, reward_function)
+                 temperature_steps: int,
+                 *,
+                 dead_end_detector: Callable[[mm.State, mm.GroundConjunctiveCondition], bool] | None = None) -> None:
+        super().__init__(model, reward_function, dead_end_detector=dead_end_detector)
         assert isinstance(initial_temperature, float), "Initial temperature must be a float."
         assert isinstance(final_temperature, float), "Final temperature must be a float."
         assert isinstance(temperature_steps, int), "Temperature steps must be an integer."
@@ -236,8 +238,10 @@ class GreedyPolicyTrajectorySampler(PolicyRolloutSampler):
     """
     def __init__(self,
                  model: ActionScalarModel,
-                 reward_function: RewardFunction) -> None:
-        super().__init__(model, reward_function)
+                 reward_function: RewardFunction,
+                 *,
+                 dead_end_detector: Callable[[mm.State, mm.GroundConjunctiveCondition], bool] | None = None) -> None:
+        super().__init__(model, reward_function, dead_end_detector=dead_end_detector)
 
     def sample_action_index(self, state: mm.State, actions: list[mm.GroundAction], values: torch.Tensor) -> int:
         action_index = values.argmax().item()

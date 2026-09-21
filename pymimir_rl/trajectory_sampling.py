@@ -1,6 +1,7 @@
 import pymimir as mm
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from typing import Any
 
 from .reward_functions import RewardFunction
@@ -24,9 +25,11 @@ class TrajectoryState:
 
 
 class TrajectorySampler(ABC):
-    """
-    Abstract base class for sampling trajectories.
-    """
+    """Abstract base class for sampling trajectories."""
+
+    def __init__(self, dead_end_detector: Callable[[mm.State, mm.GroundConjunctiveCondition], bool] | None = None) -> None:
+        self.dead_end_detector = dead_end_detector
+
     def _to_trajectory(self, trajectory_state: TrajectoryState, reward_function: RewardFunction) -> Trajectory:
         return Trajectory(
             trajectory_state.state_sequence,
@@ -36,6 +39,7 @@ class TrajectorySampler(ABC):
             trajectory_state.reward_sequence,
             reward_function,
             trajectory_state.goal_condition,
+            self.dead_end_detector,
         )
 
     def _to_trajectories(self, trajectory_states: list[TrajectoryState], reward_function: RewardFunction) -> list[Trajectory]:

@@ -2,6 +2,7 @@ import pymimir as mm
 import random
 
 from typing import Any
+from collections.abc import Callable
 
 from .reward_functions import RewardFunction
 from .trajectories import Trajectory
@@ -16,8 +17,10 @@ class MultipleTrajectorySampler(TrajectorySampler):
                  reward_function: RewardFunction,
                  trajectory_samplers: list[TrajectorySampler],
                  unnormalized_probabilities: list[float],
-                 min_steps: int = 1) -> None:
-        super().__init__()
+                 min_steps: int = 1,
+                 *,
+                 dead_end_detector: Callable[[mm.State, mm.GroundConjunctiveCondition], bool] | None = None) -> None:
+        super().__init__(dead_end_detector)
         assert isinstance(reward_function, RewardFunction), "reward_function must be an instance of RewardFunction."
         assert isinstance(trajectory_samplers, list), "trajectory_samplers must be a list."
         assert isinstance(unnormalized_probabilities, list), "unnormalized_probabilities must be a list."

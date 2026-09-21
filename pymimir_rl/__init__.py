@@ -1,3 +1,5 @@
+from .dead_end_detection import CachedDeadEndDetector
+
 from .algorithms import (
     OffPolicyAlgorithm
 )
@@ -105,6 +107,7 @@ from .subtrajectory_sampling import (
 )
 
 __all__ = [
+    "CachedDeadEndDetector",
     "ActionQuantileModel",
     "ActionScalarModel",
     "BeamSearchTrajectorySampler",

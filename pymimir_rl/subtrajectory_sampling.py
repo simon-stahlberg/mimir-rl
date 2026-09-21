@@ -3,6 +3,7 @@ import random
 
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
+from collections.abc import Callable
 
 from .reward_functions import RewardFunction
 from .trajectories import Trajectory
@@ -22,10 +23,13 @@ class SubtrajectorySampler(ABC):
 
 
 class IWSubtrajectorySampler(SubtrajectorySampler):
-    def __init__(self, reward_function: RewardFunction, width: int) -> None:
+    def __init__(self, reward_function: RewardFunction, width: int,
+                 *,
+                 dead_end_detector: Callable[[mm.State, mm.GroundConjunctiveCondition], bool] | None = None) -> None:
         super().__init__()
         self.reward_function = reward_function
         self.width = width
+        self.dead_end_detector = dead_end_detector
 
     def _get_goal_improvement(self,
                               state: mm.State,
@@ -43,7 +47,6 @@ class IWSubtrajectorySampler(SubtrajectorySampler):
     def sample(self, state: mm.State, goal_condition: mm.GroundConjunctiveCondition) -> Trajectory | None:
         def is_terminal(candidate_state: mm.State) -> bool:
             return (goal_condition.holds(candidate_state) or
-                    self.reward_function.is_dead_end(candidate_state, goal_condition) or
                     len(candidate_state.applicable_actions()) == 0)
 
         if is_terminal(state):
@@ -127,6 +130,6 @@ class IWSubtrajectorySampler(SubtrajectorySampler):
             value_sequence.reverse()
             q_value_sequence.reverse()
             reward_sequence.reverse()
-            return Trajectory(state_sequence, action_sequence, value_sequence, q_value_sequence, reward_sequence, self.reward_function, goal_condition)
+            return Trajectory(state_sequence, action_sequence, value_sequence, q_value_sequence, reward_sequence, self.reward_function, goal_condition, self.dead_end_detector)
         # We were unable to find a single state that overlapped with the goal.
         return None

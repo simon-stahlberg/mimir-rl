@@ -151,8 +151,9 @@ class DiscreteSoftActorCriticOptimization(OptimizationFunction):
                     target_qvalues.append(torch.tensor(dead_end_value, device=device))
             immediate_rewards = torch.tensor([transition.immediate_reward for transition in transitions], requires_grad=False, dtype=torch.float, device=device)
             is_terminal = torch.tensor([transition.is_terminal for transition in transitions], dtype=torch.float, requires_grad=False, device=device)
-            discounted_targets = immediate_rewards + (1.0 - is_terminal) * self.discount_factor * torch.stack(target_qvalues)
-            return discounted_targets
+            targets = torch.where(is_terminal.bool(), immediate_rewards, immediate_rewards + self.discount_factor * torch.stack(target_qvalues))
+            dead_ends = torch.tensor([transition.successor_is_dead_end for transition in transitions], dtype=torch.bool, device=device)
+            return torch.where(dead_ends, dead_end_value, targets)
 
     def _compute_critic_losses(self,
                                transitions: list[Transition],

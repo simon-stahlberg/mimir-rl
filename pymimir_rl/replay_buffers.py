@@ -118,8 +118,8 @@ class PrioritizedReplayBuffer(ReplayBuffer):
                 - weights (np.array): Importance sampling weights.
                 - indices (np.array): Indices of sampled transitions.
         """
-        if len(self.buffer) == 0:
-            return ([], torch.tensor([]), torch.tensor([]))
+        if n == 0 or len(self.buffer) == 0:
+            return ([], torch.tensor([]), torch.tensor([], dtype=torch.long))
         # Compute probability distribution.
         priorities = self.priorities[:len(self.buffer)] ** self.alpha
         probabilities = priorities / priorities.sum()

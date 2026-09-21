@@ -4,6 +4,7 @@ import pymimir as mm
 from abc import ABC, abstractmethod
 
 from .trajectories import Trajectory
+from .reward_functions import RewardFunction
 from .trajectory_sampling import TrajectorySampler
 
 
@@ -59,7 +60,9 @@ class TDErrorCriteria(EvaluationCriteria):
         for trajectory in trajectories:
             if not self.only_solutions or trajectory.is_solution():
                 for idx, transition in enumerate(trajectory):
-                    if transition.is_terminal:
+                    if transition.successor_is_dead_end:
+                        target = RewardFunction.get_dead_end_reward()
+                    elif transition.is_terminal:
                         target = transition.immediate_reward
                     elif idx + 1 < len(trajectory):
                         target = transition.immediate_reward + trajectory[idx + 1].predicted_q_value

@@ -23,6 +23,10 @@ class OptimizationFunction(ABC):
         lower_bounds: list[float] = []
         upper_bounds: list[float] = []
         for transition in transitions:
+            if transition.successor_is_dead_end:
+                lower_bounds.append(float("-inf"))
+                upper_bounds.append(float("inf"))
+                continue
             reward_function = transition.reward_function
             lower_bound, upper_bound = reward_function.get_value_bounds(transition.immediate_reward, transition.future_rewards, transition.part_of_solution)
             lower_bounds.append(lower_bound)
