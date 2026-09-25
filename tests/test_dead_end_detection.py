@@ -83,7 +83,7 @@ def test_h2_labels_only_after_rollout_and_relabels_hindsight(problem, start_in_d
     trajectory.validate(False)
 
     # This goal is reachable along the recorded suffix, despite the original goal being impossible.
-    hindsight_goal = problem.ground_condition(problem.fact("dead2"))
+    hindsight_goal = problem.ground_condition(problem.atom("dead2"))
     end_index = 1 if start_in_dead_end else 3
     checked_before_hindsight = len(checked)
     hindsight = trajectory.clone_with_goal(0, end_index, hindsight_goal)
@@ -101,7 +101,7 @@ def test_forward_proof_does_not_require_detector_to_recognize_later_states(probl
 
     def detector(state, goal):
         checked.append(state)
-        return state.holds(problem.fact("dead0"))
+        return state.holds(problem.atom("dead0"))
 
     trajectory = rl.GreedyPolicyTrajectorySampler(
         PreferenceModel(), rl.ConstantRewardFunction(-1.0), dead_end_detector=detector,
@@ -191,7 +191,7 @@ def test_dead_end_replay_cutoff_preserves_labels_and_targets(problem, monkeypatc
     # Only the end of the dead region is recognized, leaving room for an earlier Q-based cutoff.
     sampler = rl.GreedyPolicyTrajectorySampler(
         PreferenceModel(), rl.ConstantRewardFunction(-1.0),
-        dead_end_detector=lambda state, goal: state.holds(problem.fact("dead2")),
+        dead_end_detector=lambda state, goal: state.holds(problem.atom("dead2")),
     )
     trajectory = sampler.sample([(problem.initial_state, problem.goal)], 5)[0]
     for transition, value in zip(trajectory, values, strict=True):
@@ -260,7 +260,7 @@ def test_solutions_skip_dead_end_detection(problem, initially_solved, monkeypatc
     sampler = rl.GreedyPolicyTrajectorySampler(
         PreferenceModel("finish"), reward_function, dead_end_detector=detector,
     )
-    goal = problem.ground_condition(problem.fact("ready")) if initially_solved else problem.goal
+    goal = problem.ground_condition(problem.atom("ready")) if initially_solved else problem.goal
     trajectory = sampler.sample([(problem.initial_state, goal)], 5)[0]
     assert len(trajectory) == (0 if initially_solved else 2)
     assert trajectory.is_solution()

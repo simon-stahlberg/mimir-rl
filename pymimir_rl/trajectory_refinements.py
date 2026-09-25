@@ -187,8 +187,8 @@ class LiftedHindsightTrajectoryRefiner(TrajectoryRefiner):
         # Add edges.
         for idx_i in range(len(goal_literals)):
             for idx_j in range(idx_i + 1, len(goal_literals)):
-                objs_i = goal_literals[idx_i].atom.objects
-                objs_j = goal_literals[idx_j].atom.objects
+                objs_i = goal_literals[idx_i].atom.arguments
+                objs_j = goal_literals[idx_j].atom.arguments
                 if any(o in objs_j for o in objs_i):
                     goal_graph.add_edge(idx_i, idx_j)  # type: ignore
         # Enumerate all connected subcomponents.
