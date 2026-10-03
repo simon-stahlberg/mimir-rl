@@ -122,12 +122,12 @@ class RecordingOptimization(rl.OptimizationFunction):
         return torch.ones(len(transitions))
 
 
-def make_algorithm(problem, sampler, loss, dead_buffer, hindsight_buffer, *, dead_end_q_factor=0.25):
+def make_algorithm(problem, sampler, loss, dead_buffer, hindsight_buffer, *, dead_end_cutoff=None):
     return rl.OffPolicyAlgorithm(
         [problem], loss, sampler.reward_function, dead_buffer, hindsight_buffer,
         sampler, horizon=5, rollout_count=1, batch_size=4, train_steps=1,
         trajectory_refiner=rl.StateHindsightTrajectoryRefiner(100),
-        dead_end_q_factor=dead_end_q_factor,
+        dead_end_cutoff=dead_end_cutoff,
     )
 
 
@@ -167,53 +167,43 @@ def test_replay_admits_only_proven_trajectories_and_relabels_all_outcomes(proble
 
     monkeypatch.setattr(algorithm.trajectory_refiner, "refine", check_full_trajectories)
     algorithm.collect_experience(1)
-    assert dead_buffer.buffer == dead.transitions[1:] + initially_dead.transitions
+    assert dead_buffer.buffer == dead.transitions + initially_dead.transitions
     assert len(hindsight_buffer) > 0
     assert all(t.part_of_solution and not t.successor_is_dead_end for t in hindsight_buffer.buffer)
     assert all(t not in list(truncated) + list(solved) + list(dead) + list(initially_dead)
                for t in hindsight_buffer.buffer)
 
 
-@pytest.mark.parametrize("values,factor,expected_cutoff", [
-    ([0.0] * 5, 0.25, 3),
-    ([0.0, 0.0, -2500.0, 0.0, 0.0], 0.25, 1),
-    ([0.0, 0.0, -2499.0, 0.0, 0.0], 0.25, 3),
-    ([-2500.0, 0.0, 0.0, 0.0, 0.0], 0.25, 0),
-    ([0.0, -3000.0, 0.0, 0.0, 0.0], 0.25, 0),
-    ([0.0, 0.0, 0.0, -2500.0, 0.0], 0.25, 2),
-    ([0.0, 0.0, 0.0, 0.0, -2500.0], 0.25, 3),
-    ([0.0, 0.0, -2500.0, 0.0, 0.0], 0.5, 3),
-    ([0.0, 0.0, -5000.0, 0.0, 0.0], 0.5, 1),
-    ([0.0, 0.0, -10000.0, 0.0, 0.0], 1.0, 1),
-    ([0.0, float("nan"), float("inf"), float("-inf"), 0.0], 0.25, 3),
-])
-def test_dead_end_replay_cutoff_preserves_labels_and_targets(problem, monkeypatch, values, factor, expected_cutoff):
-    # Only the end of the dead region is recognized, leaving room for an earlier Q-based cutoff.
+@pytest.mark.parametrize("expected_cutoff", [0, 1, 3, 5])
+def test_dead_end_replay_cutoff_preserves_labels_and_targets(problem, monkeypatch, expected_cutoff):
     sampler = rl.GreedyPolicyTrajectorySampler(
         PreferenceModel(), rl.ConstantRewardFunction(-1.0),
         dead_end_detector=lambda state, goal: state.holds(problem.atom("dead2")),
     )
     trajectory = sampler.sample([(problem.initial_state, problem.goal)], 5)[0]
-    for transition, value in zip(trajectory, values, strict=True):
-        transition.predicted_value = value
+    for transition in trajectory:
         transition.predicted_q_value = -10000.0
     labels = [t.successor_is_dead_end for t in trajectory]
     assert labels == [False, False, False, True, True]
     dead_buffer = rl.PrioritizedReplayBuffer(100)
+    cutoff_calls = []
+
+    def dead_end_cutoff(cut_trajectory):
+        cutoff_calls.append(cut_trajectory)
+        return expected_cutoff
+
     algorithm = make_algorithm(
         problem, sampler, RecordingOptimization(), dead_buffer, rl.PrioritizedReplayBuffer(100),
-        dead_end_q_factor=factor,
+        dead_end_cutoff=dead_end_cutoff,
     )
     monkeypatch.setattr(algorithm, "sample_trajectories", lambda pairs: [trajectory])
-
-    def unexpected_inference(*args, **kwargs):
-        pytest.fail("Replay selection must use recorded predictions")
-
-    monkeypatch.setattr(sampler.model, "forward", unexpected_inference)
     algorithm.collect_experience(1)
+    assert cutoff_calls == [trajectory]
     assert dead_buffer.buffer == trajectory.transitions[expected_cutoff:]
     assert [t.successor_is_dead_end for t in trajectory] == labels
     assert [t.immediate_reward for t in trajectory] == [-1.0] * 5
+    if not dead_buffer.buffer:
+        return
 
     model = PreferenceModel(preferred="", value=-10000.0)
     optimizer = torch.optim.Adam(model.parameters())
@@ -225,14 +215,20 @@ def test_dead_end_replay_cutoff_preserves_labels_and_targets(problem, monkeypatc
     torch.testing.assert_close(targets, expected[expected_cutoff:])
 
 
-@pytest.mark.parametrize("factor", [0.0, -0.25, 1.01, float("nan"), float("inf"), float("-inf")])
-def test_dead_end_replay_rejects_invalid_q_factor(problem, factor):
-    sampler = rl.GreedyPolicyTrajectorySampler(PreferenceModel(), rl.ConstantRewardFunction(-1.0))
-    with pytest.raises(ValueError, match="dead_end_q_factor"):
-        make_algorithm(
-            problem, sampler, RecordingOptimization(), rl.PrioritizedReplayBuffer(10),
-            rl.PrioritizedReplayBuffer(10), dead_end_q_factor=factor,
-        )
+@pytest.mark.parametrize("cutoff", [-1, 6])
+def test_dead_end_replay_rejects_out_of_range_cutoff(problem, monkeypatch, cutoff):
+    sampler = rl.GreedyPolicyTrajectorySampler(
+        PreferenceModel(), rl.ConstantRewardFunction(-1.0),
+        dead_end_detector=lambda state, goal: state.holds(problem.atom("dead2")),
+    )
+    trajectory = sampler.sample([(problem.initial_state, problem.goal)], 5)[0]
+    algorithm = make_algorithm(
+        problem, sampler, RecordingOptimization(), rl.PrioritizedReplayBuffer(10),
+        rl.PrioritizedReplayBuffer(10), dead_end_cutoff=lambda cut_trajectory: cutoff,
+    )
+    monkeypatch.setattr(algorithm, "sample_trajectories", lambda pairs: [trajectory])
+    with pytest.raises(ValueError, match="dead_end_cutoff returned"):
+        algorithm.collect_experience(1)
 
 
 @pytest.mark.parametrize("dead_count,hindsight_count,batch_size", [(0, 0, 4), (1, 0, 4), (0, 1, 4), (1, 1, 4), (1, 1, 1)])

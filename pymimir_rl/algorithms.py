@@ -1,4 +1,3 @@
-import math
 import pymimir as mm
 import torch
 
@@ -36,7 +35,7 @@ class OffPolicyAlgorithm:
                  goal_condition_sampler: GoalConditionSampler |  None = None,
                  trajectory_refiner: TrajectoryRefiner |  None = None,
                  *,
-                 dead_end_q_factor: float = 0.25) -> None:
+                 dead_end_cutoff: Callable[[Trajectory], int] | None = None) -> None:
         """
         Initialize the off-policy RL algorithm with the specified components.
 
@@ -55,10 +54,9 @@ class OffPolicyAlgorithm:
             initial_state_sampler (InitialStateSampler, optional): Sampler for initial states. Defaults to OriginalInitialStateSampler.
             goal_condition_sampler (GoalConditionSampler, optional): Sampler for goal conditions. Defaults to OriginalGoalConditionSampler.
             trajectory_refiner (TrajectoryRefiner, optional): Refiner for trajectories. Defaults to IdentityTrajectoryRefiner.
-            dead_end_q_factor (float): Fraction of the dead-end value used to select the replay suffix.
+            dead_end_cutoff (Callable[[Trajectory], int], optional): Given a trajectory that enters a dead end, returns
+                the index of its first transition to store in the dead-end replay buffer. Defaults to storing the whole trajectory.
         """
-        if not 0.0 < dead_end_q_factor <= 1.0:
-            raise ValueError("dead_end_q_factor must be in (0, 1].")
         assert isinstance(problems, list) and all(isinstance(problem, mm.Problem) for problem in problems), "Problems must be a list of mm.Problem instances."
         assert len(problems) > 0, "At least one problem must be provided."
         assert isinstance(loss_function, OptimizationFunction), "Loss function must be an instance of LossFunction."
@@ -74,7 +72,7 @@ class OffPolicyAlgorithm:
         self.loss_function = loss_function
         self.reward_function = reward_function
         self.dead_end_replay_buffer = dead_end_replay_buffer
-        self.dead_end_q_factor = dead_end_q_factor
+        self.dead_end_cutoff = dead_end_cutoff
         self.hindsight_replay_buffer = hindsight_replay_buffer
         self.trajectory_sampler = trajectory_sampler
         self.horizon = horizon
@@ -335,19 +333,12 @@ class OffPolicyAlgorithm:
             state_goals = list(zip(initial_states, goal_conditions))
             trajectories = self.sample_trajectories(state_goals)
             if self.dead_end_replay_buffer is not None:
-                cutoff_value = RewardFunction.get_dead_end_reward() * self.dead_end_q_factor
                 for trajectory in trajectories:
                     if not trajectory.is_unsolvable():
                         continue
-                    cutoff_index = len(trajectory)
-                    for index, transition in enumerate(trajectory):
-                        if math.isfinite(transition.predicted_value) and transition.predicted_value <= cutoff_value:
-                            # The prediction describes the current state; retain the action entering it.
-                            cutoff_index = max(0, index - 1)
-                            break
-                        if transition.successor_is_dead_end:
-                            cutoff_index = index
-                            break
+                    cutoff_index = 0 if self.dead_end_cutoff is None else self.dead_end_cutoff(trajectory)
+                    if not 0 <= cutoff_index <= len(trajectory):
+                        raise ValueError(f"dead_end_cutoff returned {cutoff_index} for a trajectory of length {len(trajectory)}.")
                     for transition in trajectory.transitions[cutoff_index:]:
                         self.dead_end_replay_buffer.push(transition)
             # Store all relabeled trajectories in the hindsight replay buffer.
