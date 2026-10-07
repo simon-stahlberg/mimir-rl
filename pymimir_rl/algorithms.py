@@ -35,7 +35,8 @@ class OffPolicyAlgorithm:
                  goal_condition_sampler: GoalConditionSampler |  None = None,
                  trajectory_refiner: TrajectoryRefiner |  None = None,
                  *,
-                 dead_end_cutoff: Callable[[Trajectory], int] | None = None) -> None:
+                 dead_end_cutoff: Callable[[Trajectory], int] | None = None,
+                 dead_end_batch_size: int | None = None) -> None:
         """
         Initialize the off-policy RL algorithm with the specified components.
 
@@ -56,6 +57,8 @@ class OffPolicyAlgorithm:
             trajectory_refiner (TrajectoryRefiner, optional): Refiner for trajectories. Defaults to IdentityTrajectoryRefiner.
             dead_end_cutoff (Callable[[Trajectory], int], optional): Given a trajectory that enters a dead end, returns
                 the index of its first transition to store in the dead-end replay buffer. Defaults to storing the whole trajectory.
+            dead_end_batch_size (int, optional): Dead-end transitions added to each optimization step on top of the
+                ``batch_size`` hindsight transitions, at most one per stored transition. Defaults to ``batch_size // 2``.
         """
         assert isinstance(problems, list) and all(isinstance(problem, mm.Problem) for problem in problems), "Problems must be a list of mm.Problem instances."
         assert len(problems) > 0, "At least one problem must be provided."
@@ -68,11 +71,13 @@ class OffPolicyAlgorithm:
         assert horizon > 0, "Horizon must be positive."
         assert isinstance(train_steps, int), "Train steps must be an integer."
         assert train_steps > 0, "Train steps must be positive."
+        assert dead_end_batch_size is None or dead_end_batch_size >= 0, "Dead-end batch size must be non-negative."
         self.problems = problems
         self.loss_function = loss_function
         self.reward_function = reward_function
         self.dead_end_replay_buffer = dead_end_replay_buffer
         self.dead_end_cutoff = dead_end_cutoff
+        self.dead_end_batch_size = batch_size // 2 if dead_end_batch_size is None else dead_end_batch_size
         self.hindsight_replay_buffer = hindsight_replay_buffer
         self.trajectory_sampler = trajectory_sampler
         self.horizon = horizon
@@ -354,7 +359,8 @@ class OffPolicyAlgorithm:
         Update the strategy using a batch of data.
 
         Args:
-            batch_size (int): The batch size for model optimization.
+            batch_size (int): Hindsight transitions per optimization step; up to ``dead_end_batch_size`` dead-end
+                transitions are added on top.
         """
         self._notify_pre_optimize_model()
         len_dead_end = len(self.dead_end_replay_buffer) if self.dead_end_replay_buffer is not None else 0
@@ -363,17 +369,15 @@ class OffPolicyAlgorithm:
         if buffer_size > 0:
             for _ in range(self.train_steps):
                 if self.dead_end_replay_buffer is not None:
-                    dead_samples = min(len_dead_end, batch_size // 2) if len_hindsight else batch_size
+                    # Sampling is with replacement, so never draw more than the buffer holds.
+                    dead_samples = min(len_dead_end, self.dead_end_batch_size)
                     dead_transitions, dead_weights, dead_indices = self.dead_end_replay_buffer.sample(dead_samples)
                 else:
                     dead_samples = 0
                     dead_transitions, dead_weights, dead_indices = [], torch.tensor([]), torch.tensor([])
-                # Sample from the hindsight buffer to fill the rest of the batch, if available.
                 if self.hindsight_replay_buffer is not None:
-                    her_samples = batch_size - dead_samples
-                    her_transitions, her_weights, her_indices = self.hindsight_replay_buffer.sample(her_samples)
+                    her_transitions, her_weights, her_indices = self.hindsight_replay_buffer.sample(batch_size)
                 else:
-                    her_samples = 0
                     her_transitions, her_weights, her_indices = [], torch.tensor([]), torch.tensor([])
                 # Combine buffers and compute losses.
                 transitions = dead_transitions + her_transitions

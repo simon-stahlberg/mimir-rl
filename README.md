@@ -30,7 +30,10 @@ new goal using the same detector cache.
 `OffPolicyAlgorithm` accepts `dead_end_replay_buffer` and `hindsight_replay_buffer`.
 The former receives each trajectory containing a proven dead state, from the
 index returned by the optional `dead_end_cutoff(trajectory)` callable onwards.
-Without a callable, the whole trajectory is stored.
+Without a callable, the whole trajectory is stored. Each optimization step
+samples `batch_size` hindsight transitions and adds up to `dead_end_batch_size`
+dead-end transitions (default `batch_size // 2`, at most one per stored
+transition), passing both to the loss as one batch.
 
 The cutoff only selects replay experience; it does not create dead-end labels
 or change targets. All sampled trajectories remain intact for hindsight

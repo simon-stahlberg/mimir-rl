@@ -231,19 +231,55 @@ def test_dead_end_replay_rejects_out_of_range_cutoff(problem, monkeypatch, cutof
         algorithm.collect_experience(1)
 
 
-@pytest.mark.parametrize("dead_count,hindsight_count,batch_size", [(0, 0, 4), (1, 0, 4), (0, 1, 4), (1, 1, 4), (1, 1, 1)])
-def test_replay_sampling_with_empty_or_small_buffers(problem, dead_count, hindsight_count, batch_size):
+@pytest.mark.parametrize("dead_count,hindsight_count,batch_size,dead_end_batch_size,expected", [
+    (0, 0, 4, None, None),
+    (1, 0, 4, None, (1, 0)),
+    (3, 0, 4, None, (2, 0)),
+    (0, 1, 4, None, (0, 4)),
+    (1, 1, 4, None, (1, 4)),
+    (3, 3, 4, None, (2, 4)),
+    (3, 3, 4, 3, (3, 4)),
+    (3, 3, 4, 0, (0, 4)),
+    (1, 1, 1, None, (1, 1)),
+])
+def test_replay_sampling_adds_dead_end_samples_to_a_full_hindsight_batch(
+    problem, dead_count, hindsight_count, batch_size, dead_end_batch_size, expected,
+):
     sampler = rl.GreedyPolicyTrajectorySampler(PreferenceModel(), rl.ConstantRewardFunction(-1.0))
-    transition = sampler.sample([(problem.initial_state, problem.goal)], 1)[0][0]
+    dead_transition, hindsight_transition = (
+        sampler.sample([(problem.initial_state, problem.goal)], 1)[0][0] for _ in range(2)
+    )
     dead_buffer = rl.PrioritizedReplayBuffer(10)
     hindsight_buffer = rl.PrioritizedReplayBuffer(10)
-    for buffer, count in [(dead_buffer, dead_count), (hindsight_buffer, hindsight_count)]:
+    for buffer, transition, count in [(dead_buffer, dead_transition, dead_count), (hindsight_buffer, hindsight_transition, hindsight_count)]:
         for _ in range(count):
             buffer.push(transition)
     loss = RecordingOptimization()
-    algorithm = make_algorithm(problem, sampler, loss, dead_buffer, hindsight_buffer)
+    algorithm = rl.OffPolicyAlgorithm(
+        [problem], loss, sampler.reward_function, dead_buffer, hindsight_buffer,
+        sampler, horizon=5, rollout_count=1, batch_size=4, train_steps=1,
+        dead_end_batch_size=dead_end_batch_size,
+    )
     algorithm.optimize_model(batch_size)
-    assert [len(batch) for batch in loss.batches] == ([batch_size] if dead_count + hindsight_count else [])
+    if expected is None:
+        assert loss.batches == []
+        return
+    (batch,) = loss.batches
+    composition = (
+        sum(transition is dead_transition for transition in batch),
+        sum(transition is hindsight_transition for transition in batch),
+    )
+    assert composition == expected
+
+
+def test_dead_end_batch_size_must_be_non_negative(problem):
+    sampler = rl.GreedyPolicyTrajectorySampler(PreferenceModel(), rl.ConstantRewardFunction(-1.0))
+    with pytest.raises(AssertionError, match="Dead-end batch size"):
+        rl.OffPolicyAlgorithm(
+            [problem], RecordingOptimization(), sampler.reward_function, rl.PrioritizedReplayBuffer(10),
+            rl.PrioritizedReplayBuffer(10), sampler, horizon=5, rollout_count=1, batch_size=4, train_steps=1,
+            dead_end_batch_size=-1,
+        )
 
 
 @pytest.mark.parametrize("initially_solved", [False, True])
