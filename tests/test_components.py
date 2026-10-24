@@ -1,3 +1,4 @@
+import itertools
 import math
 from typing import Any, Callable, cast
 import pymimir as mm
@@ -1650,6 +1651,56 @@ def test_propositional_hindsight(domain_name: str):
     for refined_trajectory in refined_trajectories:
         assert refined_trajectory.is_solution()
         refined_trajectory.validate()
+
+
+def _reference_propositional_hindsight(problem: mm.Problem, trajectories: list[Trajectory], max_generated: int) -> list[tuple[int, int, int, mm.GroundConjunctiveCondition]]:
+    """The refinement checking every subgoal with `holds`, as (trajectory, first index, last index, subgoal) per refined
+    trajectory."""
+    goal_literals = list(problem.goal)
+    subgoals = [problem.ground_condition(*literals)
+                for size in range(1, len(goal_literals) + 1)
+                for literals in itertools.islice(itertools.combinations(goal_literals, size), 100)]
+    subgoals.sort(key=len, reverse=True)
+    refined: list[tuple[int, int, int, mm.GroundConjunctiveCondition]] = []
+    for trajectory_index, trajectory in enumerate(trajectories):
+        end_index = len(trajectory) - 1
+        while end_index >= 0:
+            for subgoal in subgoals:
+                if subgoal.holds(trajectory[end_index].successor_state):
+                    closed_set: set[mm.State] = set()
+                    start_index = end_index
+                    while start_index >= 0:
+                        transition = trajectory[start_index]
+                        closed_set.add(transition.successor_state)
+                        if (transition.current_state in closed_set) or subgoal.holds(transition.current_state):
+                            break
+                        start_index -= 1
+                    if (start_index + 1) <= end_index:
+                        refined.append((trajectory_index, start_index + 1, end_index, subgoal))
+                    end_index = start_index
+                    break
+            if len(refined) >= max_generated:
+                return refined
+            end_index -= 1
+    return refined
+
+
+@pytest.mark.parametrize("domain_name", ['blocks-hard', 'gripper-hard', 'spanner-hard'])
+def test_propositional_hindsight_matches_checking_every_subgoal(domain_name: str):
+    domain = mm.Domain.from_file(DATA_DIR / domain_name / 'domain.pddl')
+    problem = mm.Problem.from_file(domain, DATA_DIR / domain_name / 'problem.pddl')
+    torch.manual_seed(0)
+    trajectory_sampler = PolicyTrajectorySampler(RGNNWrapper(domain), ConstantRewardFunction(-1))
+    trajectories = trajectory_sampler.sample([(problem.initial_state, problem.goal)] * 4, 50)
+    for max_generated in (3, 1000):
+        refined = PropositionalHindsightTrajectoryRefiner([problem], max_generated).refine(trajectories)
+        expected = _reference_propositional_hindsight(problem, trajectories, max_generated)
+        assert len(refined) == len(expected)
+        for refined_trajectory, (trajectory_index, start_index, end_index, subgoal) in zip(refined, expected):
+            assert len(refined_trajectory) == end_index - start_index + 1
+            assert refined_trajectory[0].current_state is trajectories[trajectory_index][start_index].current_state
+            assert refined_trajectory[-1].successor_state is trajectories[trajectory_index][end_index].successor_state
+            assert set(refined_trajectory.goal_condition) == set(subgoal)
 
 
 @pytest.mark.parametrize("domain_name", ['blocks-hard', 'gripper-hard'])

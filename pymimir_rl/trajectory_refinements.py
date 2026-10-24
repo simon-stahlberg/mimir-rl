@@ -113,22 +113,40 @@ class StateHindsightTrajectoryRefiner(TrajectoryRefiner):
         return refined_trajectories
 
 
+def _largest_holding_subgoal(subgoals: list[tuple[int, list[tuple[mm.GroundConjunctiveCondition, int]]]],
+                             holding_mask: int) -> tuple[mm.GroundConjunctiveCondition, int] | None:
+    """The first subgoal of the largest size whose goal literals all hold, given the bitmask of the goal literals that
+    hold, and its own bitmask; the subgoals are by size, largest first."""
+    for size, sized_subgoals in subgoals:
+        # A subgoal cannot hold if it has more literals than hold.
+        if size > holding_mask.bit_count():
+            continue
+        for subgoal, subgoal_mask in sized_subgoals:
+            if subgoal_mask & ~holding_mask == 0:
+                return subgoal, subgoal_mask
+    return None
+
+
 class PropositionalHindsightTrajectoryRefiner(TrajectoryRefiner):
     def __init__(self, problems: list[mm.Problem], max_generated: int):
         self.problems = problems
         self.max_generated = max_generated
-        self.problem_subgoals: dict[mm.Problem, list[mm.GroundConjunctiveCondition]] = {}
+        # Per problem, a condition per goal literal, and the subgoals by size, largest first, each with the bitmask of
+        # its goal literals: a subgoal holds in a state if its literals are among the goal literals that hold there.
+        self.problem_literal_conditions: dict[mm.Problem, list[mm.GroundConjunctiveCondition]] = {}
+        self.problem_subgoals: dict[mm.Problem, list[tuple[int, list[tuple[mm.GroundConjunctiveCondition, int]]]]] = {}
         for problem in problems:
-            goal_condition = problem.goal
-            goal_literals = list(goal_condition)
-            # Enumerate all possible combinations of goal_atoms
-            subgoals: list[mm.GroundConjunctiveCondition] = []
-            for size in range(1, len(goal_literals) + 1):
-                list_of_subgoal_literals = itertools.islice(itertools.combinations(goal_literals, size), 100)
-                for subgoal_literals in list_of_subgoal_literals:
-                    subgoal = problem.ground_condition(*subgoal_literals)
-                    subgoals.append(subgoal)
-            subgoals.sort(key=len, reverse=True)
+            goal_literals = list(problem.goal)
+            # Enumerate combinations of the goal literals, at most 100 per size.
+            subgoals: list[tuple[int, list[tuple[mm.GroundConjunctiveCondition, int]]]] = []
+            for size in range(len(goal_literals), 0, -1):
+                sized_subgoals: list[tuple[mm.GroundConjunctiveCondition, int]] = []
+                for subgoal_indices in itertools.islice(itertools.combinations(range(len(goal_literals)), size), 100):
+                    subgoal = problem.ground_condition(*(goal_literals[index] for index in subgoal_indices))
+                    assert len(subgoal) == size, "Goal literals must be distinct."
+                    sized_subgoals.append((subgoal, sum(1 << index for index in subgoal_indices)))
+                subgoals.append((size, sized_subgoals))
+            self.problem_literal_conditions[problem] = [problem.ground_condition(literal) for literal in goal_literals]
             self.problem_subgoals[problem] = subgoals
 
     def refine(self, trajectories: list[Trajectory]) -> list[Trajectory]:
@@ -138,23 +156,36 @@ class PropositionalHindsightTrajectoryRefiner(TrajectoryRefiner):
                 refined_trajectories.append(trajectory)
             else:
                 assert trajectory.problem in self.problems
+                literal_conditions = self.problem_literal_conditions[trajectory.problem]
                 subgoals = self.problem_subgoals[trajectory.problem]
+                # The goal literals that hold in each state, computed once per state; states are keyed by identity,
+                # as the trajectory keeps them alive and hashing states calls native code.
+                holding_masks: dict[int, int] = {}
+
+                def holding_mask(state: mm.State) -> int:
+                    mask = holding_masks.get(id(state))
+                    if mask is None:
+                        mask = sum(1 << index for index, condition in enumerate(literal_conditions) if condition.holds(state))
+                        holding_masks[id(state)] = mask
+                    return mask
+
                 end_index = len(trajectory) - 1
                 while end_index >= 0:
-                    for subgoal in subgoals:
-                        if subgoal.holds(trajectory[end_index].successor_state):
-                            closed_set: set[mm.State] = set()
-                            start_index = end_index
-                            while start_index >= 0:
-                                transition = trajectory[start_index]
-                                closed_set.add(transition.successor_state)
-                                if (transition.current_state in closed_set) or subgoal.holds(transition.current_state):
-                                    break  # Stop when we have found the first "invalid" transition
-                                start_index -= 1
-                            if (start_index + 1) <= end_index:
-                                refined_trajectories.append(trajectory.clone_with_goal(start_index + 1, end_index, subgoal))
-                            end_index = start_index
-                            break  # Only extract the largest subgoal per index
+                    # Only extract the largest subgoal per index.
+                    match = _largest_holding_subgoal(subgoals, holding_mask(trajectory[end_index].successor_state))
+                    if match is not None:
+                        subgoal, subgoal_mask = match
+                        closed_set: set[mm.State] = set()
+                        start_index = end_index
+                        while start_index >= 0:
+                            transition = trajectory[start_index]
+                            closed_set.add(transition.successor_state)
+                            if (transition.current_state in closed_set) or subgoal_mask & ~holding_mask(transition.current_state) == 0:
+                                break  # Stop when we have found the first "invalid" transition
+                            start_index -= 1
+                        if (start_index + 1) <= end_index:
+                            refined_trajectories.append(trajectory.clone_with_goal(start_index + 1, end_index, subgoal))
+                        end_index = start_index
                     if len(refined_trajectories) >= self.max_generated:
                         return refined_trajectories
                     end_index -= 1

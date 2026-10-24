@@ -75,7 +75,6 @@ class BeamSearchTrajectorySampler(TrajectorySampler):
                 search_state.value_map[current_state] = self.DEAD_END_VALUE
                 continue
 
-            successor_values = successor_values.cpu()
             successor_states: list[mm.State] = []
             rewards: list[float] = []
             successor_goal_flags: list[bool] = []
@@ -162,6 +161,11 @@ class BeamSearchTrajectorySampler(TrajectorySampler):
                 # Evaluate all states in the beams.
                 batch_successor_values = self.model.forward(state_goals_input)
                 assert len(batch_successor_values) == len(state_goals_input), "Model forward must return one result per input state."
+                assert all(values.ndim == 1 for values, _ in batch_successor_values), "Beam search requires one scalar Q-value per action."
+                # Move the results to CPU in one transfer rather than one per state; the remaining operations are very cheap.
+                sizes = [values.numel() for values, _ in batch_successor_values]
+                cpu_values = torch.cat([values for values, _ in batch_successor_values]).cpu().split(sizes)
+                batch_successor_values = [(values, actions) for values, (_, actions) in zip(cpu_values, batch_successor_values)]
                 # Avoid visiting already visited states.
                 offset = 0
                 for trajectory_state, search_state, max_step in zip(trajectory_states, internal_states, max_steps):

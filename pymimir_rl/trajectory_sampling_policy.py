@@ -62,11 +62,13 @@ class PolicyRolloutSampler(TrajectorySampler):
             if len(state_goals) > 0:
                 q_values_batch = self.model.forward(state_goals)
                 assert len(q_values_batch) == len(state_goals), "Model forward must return one result per input state."
-                for rollout_idx, (q_values, applicable_actions) in zip(context_indices, q_values_batch):
+                assert all(q_values.ndim == 1 for q_values, _ in q_values_batch), "Policy rollout requires one scalar Q-value per action."
+                # Move the results to CPU in one transfer rather than one per rollout; the remaining operations are very cheap.
+                sizes = [q_values.numel() for q_values, _ in q_values_batch]
+                cpu_q_values = torch.cat([q_values for q_values, _ in q_values_batch]).cpu().split(sizes)
+                for rollout_idx, q_values, (_, applicable_actions) in zip(context_indices, cpu_q_values, q_values_batch):
                     trajectory_state = trajectory_states[rollout_idx]
                     internal_state = internal_states[rollout_idx]
-                    q_values = q_values.cpu()  # Move the result to CPU, the remaining operations are very cheap.
-                    assert q_values.ndim == 1, "Policy rollout requires one scalar Q-value per action."
                     assert q_values.numel() == len(applicable_actions), "Q-values and applicable actions must have equal lengths."
                     q_values_copy = q_values.clone()
                     revisit_mask = torch.zeros_like(q_values_copy, dtype=torch.bool)
